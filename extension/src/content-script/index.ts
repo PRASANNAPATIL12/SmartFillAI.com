@@ -1,8 +1,9 @@
 import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature } from '@shared/types';
 import { extractAllFields } from './detector';
-import { matchField } from '@/matcher';
+import { matchField, fingerprint } from '@/matcher';
 import { fillElement } from './filler';
 import { sendToBackground } from './messenger';
+import { fieldEmbedText } from '@/ml/step5';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -32,6 +33,8 @@ async function init(): Promise<void> {
 
   profileLoaded = true;
   scanFields();
+  // Step 5 runs after deterministic steps so it never blocks the initial render
+  runStep5().catch(() => {});
 }
 
 // ── Field scanning ────────────────────────────────────────────────────────────
@@ -56,6 +59,59 @@ function scanFields(): void {
 
     matchMap.set(el, { sig, result, entry });
     applyHint(el, result, entry);
+  }
+}
+
+// ── Step 5: async embedding pass for UNKNOWN fields ──────────────────────────
+
+async function runStep5(): Promise<void> {
+  const domain = window.location.hostname;
+  const unknownFields: Array<{ el: HTMLElement; sig: FieldSignature }> = [];
+
+  for (const [el, state] of matchMap) {
+    if (state.result.status === 'UNKNOWN') {
+      unknownFields.push({ el, sig: state.sig });
+    }
+  }
+
+  if (unknownFields.length === 0) return;
+
+  for (const { el, sig } of unknownFields) {
+    const text = fieldEmbedText(sig);
+    if (!text.trim()) continue;
+
+    try {
+      const match = await sendToBackground<{ profileEntryId: string; confidence: number } | null>(
+        'STEP5_MATCH',
+        { fieldText: text }
+      );
+
+      if (!match) continue;
+
+      const entry = profile.find(e => e.id === match.profileEntryId);
+      if (!entry) continue;
+
+      const result: MatchResult = {
+        status: 'MATCHED',
+        profileEntryId: entry.id,
+        confidence: match.confidence,
+        reason: 'embedding similarity (Step 5)',
+        matchStep: 5,
+      };
+
+      matchMap.set(el, { sig, result, entry });
+      applyHint(el, result, entry);
+
+      // Cache this match so future page visits skip Step 5 for the same field
+      const fp = fingerprint(sig, domain);
+      sendToBackground('CACHE_FIELD_MATCH', {
+        fingerprint: fp,
+        profileEntryId: entry.id,
+        confidence: match.confidence,
+      }).catch(() => {});
+    } catch {
+      // Step 5 unavailable (model not loaded, network error) — leave as UNKNOWN
+    }
   }
 }
 

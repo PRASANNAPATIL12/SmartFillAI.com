@@ -20,6 +20,9 @@ import {
   type EntryPatch,
 } from './profile-store';
 import { getSettings, updateSettings } from './settings-store';
+import { computeEmbedding, warmUp } from '@/ml/embedder';
+import { entryEmbedText, matchByEmbedding } from '@/ml/step5';
+import { setEmbedding, setCachedField } from '@/storage/idb';
 
 // ── Alarm name ────────────────────────────────────────────────────────────────
 
@@ -35,6 +38,8 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
         setProviderConfig({ provider: 'groq', fallbackProvider: 'gemini' })
       );
     }
+    // Pre-warm embedder on first install so model is cached before first form fill
+    warmUp().catch(() => {});
   }
 
   // (Re)create the periodic sync alarm on every install/update
@@ -75,13 +80,19 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
   ADD_ENTRY: async (payload) => {
     const data = payload as NewEntryData;
-    return addEntry(data);
+    const created = await addEntry(data);
+    // Compute embedding fire-and-forget so the response isn't delayed
+    embedEntry(created).catch(() => {});
+    return created;
   },
 
   UPDATE_ENTRY: async (payload) => {
     const { id, patch } = payload as { id: string; patch: EntryPatch };
     const updated = await updateEntry(id, patch);
     if (!updated) throw new Error(`Entry not found: ${id}`);
+    if (patch.value || patch.display_label || patch.aliases) {
+      embedEntry(updated).catch(() => {});
+    }
     return updated;
   },
 
@@ -124,6 +135,44 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     return { monthly, total, byProvider };
   },
 
+  // ── ML / Step 5 ────────────────────────────────────────────────────────────
+
+  STEP5_MATCH: async (payload) => {
+    const { fieldText } = payload as { fieldText: string };
+    const profile = await getAllEntries();
+    return matchByEmbedding(fieldText, profile);
+  },
+
+  CACHE_FIELD_MATCH: async (payload) => {
+    const { fingerprint, profileEntryId, confidence } = payload as {
+      fingerprint: string;
+      profileEntryId: string;
+      confidence: number;
+    };
+    await setCachedField({
+      fingerprint,
+      profileEntryId,
+      confidence,
+      useCount: 1,
+      lastUsed: Date.now(),
+    });
+    return { ok: true };
+  },
+
+  COMPUTE_EMBEDDINGS: async () => {
+    const entries = await getAllEntries();
+    let computed = 0;
+    for (const entry of entries) {
+      try {
+        await embedEntry(entry);
+        computed++;
+      } catch {
+        // skip entries that fail
+      }
+    }
+    return { computed, total: entries.length };
+  },
+
   // ── Deferred stubs (Tasks 4–8) ─────────────────────────────────────────────
 
   MATCH_FIELDS: () => {
@@ -154,6 +203,16 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     throw new Error('FILL_ALL is handled in the content script (Task 4.3)');
   },
 };
+
+// ── Embedding helper ──────────────────────────────────────────────────────────
+
+async function embedEntry(entry: ProfileEntry): Promise<void> {
+  const text = entryEmbedText(entry);
+  const vector = await computeEmbedding(text);
+  await setEmbedding(entry.id, vector);
+}
+
+// ── Message listener ──────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((
   message: { type: MessageType; payload?: unknown },
