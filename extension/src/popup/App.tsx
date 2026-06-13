@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import type { AIProviderName } from '@/ai-providers';
 import { getProviderConfig, getAPIKey } from '@/ai-providers';
 import { sendToBackground } from './utils/messages';
-import SetupScreen   from './components/SetupScreen';
-import LoginScreen   from './components/LoginScreen';
-import HomeScreen    from './components/HomeScreen';
-import ProfileScreen from './components/ProfileScreen';
+import SetupScreen    from './components/SetupScreen';
+import LoginScreen    from './components/LoginScreen';
+import HomeScreen     from './components/HomeScreen';
+import ProfileScreen  from './components/ProfileScreen';
 import SettingsScreen from './components/SettingsScreen';
+import ResumeScreen   from './components/ResumeScreen';
 
-type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings';
+type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings' | 'resume';
 
 interface SessionInfo {
   userId:    string;
@@ -79,7 +80,21 @@ export default function App(): React.ReactElement {
   }
 
   if (screen === 'profile') {
-    return <ProfileScreen onBack={() => setScreen('home')} />;
+    return (
+      <ProfileScreen
+        onBack={() => setScreen('home')}
+        onGoResume={() => setScreen('resume')}
+      />
+    );
+  }
+
+  if (screen === 'resume') {
+    return (
+      <ResumeScreen
+        onBack={() => setScreen('profile')}
+        onImport={() => setScreen('profile')}
+      />
+    );
   }
 
   if (screen === 'settings') {

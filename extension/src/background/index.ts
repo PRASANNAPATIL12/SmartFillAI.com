@@ -8,6 +8,7 @@ import {
   refreshSessionIfNeeded,
 } from './auth-manager';
 import { pushSyncQueue, pullFromCloud } from './sync-engine';
+import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -269,8 +270,14 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     throw new Error('Not implemented (Task 7.3)');
   },
 
-  PARSE_RESUME: () => {
-    throw new Error('Not implemented (Task 6.3)');
+  PARSE_RESUME: async (payload) => {
+    const { text, pdfBase64 } = payload as { text?: string; pdfBase64?: string };
+    if (!text && !pdfBase64) throw new Error('Either text or pdfBase64 is required');
+
+    const parsed   = pdfBase64 ? await parseResumePdf(pdfBase64) : await parseResumeText(text!);
+    const userId   = (await getCurrentUserId()) ?? '';
+    const entries  = await createEntriesFromResume(parsed, userId);
+    return { entries, parsed };
   },
 
   SYNC_NOW: async () => {

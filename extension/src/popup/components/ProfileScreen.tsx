@@ -10,7 +10,8 @@ import {
 } from '../utils/canonicalKeys';
 
 interface Props {
-  onBack: () => void;
+  onBack:      () => void;
+  onGoResume?: () => void;
 }
 
 type Mode = 'list' | 'add' | 'edit';
@@ -38,7 +39,7 @@ function maskValue(value: string): string {
   return value.slice(0, 2) + '•'.repeat(Math.min(value.length - 4, 8)) + value.slice(-2);
 }
 
-export default function ProfileScreen({ onBack }: Props): React.ReactElement {
+export default function ProfileScreen({ onBack, onGoResume }: Props): React.ReactElement {
   const [entries, setEntries] = useState<ProfileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<Mode>('list');
@@ -180,12 +181,23 @@ export default function ProfileScreen({ onBack }: Props): React.ReactElement {
           {mode === 'add' ? 'Add Entry' : mode === 'edit' ? 'Edit Entry' : `Profile (${entries.length})`}
         </span>
         {mode === 'list' && (
-          <button
-            onClick={openAdd}
-            className="text-sm text-sky-500 font-medium hover:text-sky-600"
-          >
-            + Add
-          </button>
+          <div className="flex items-center gap-2">
+            {onGoResume && (
+              <button
+                onClick={onGoResume}
+                title="Import from resume"
+                className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                Import
+              </button>
+            )}
+            <button
+              onClick={openAdd}
+              className="text-sm text-sky-500 font-medium hover:text-sky-600"
+            >
+              + Add
+            </button>
+          </div>
         )}
         {mode !== 'list' && <div className="w-10" />}
       </div>
