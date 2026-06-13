@@ -299,6 +299,10 @@ export type MessageType =
   // ML / Step 5
   | 'STEP5_MATCH'
   | 'COMPUTE_EMBEDDINGS'
+  // Auth (Task 6.1)
+  | 'SIGN_IN'
+  | 'SIGN_OUT'
+  | 'GET_SESSION'
   // Deferred (Tasks 4-8)
   | 'MATCH_FIELDS'
   | 'FILL_FIELD'

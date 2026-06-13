@@ -1,6 +1,14 @@
 import type { MessageType, ProfileEntry } from '@shared/types';
 import { inferCanonicalKey, inferCategory, inferDisplayLabel, type SerializableFieldSig } from './field-learner';
 import {
+  signIn,
+  signOut,
+  getSession,
+  getCurrentUserId,
+  refreshSessionIfNeeded,
+} from './auth-manager';
+import { pushSyncQueue, pullFromCloud } from './sync-engine';
+import {
   AIProviderFactory,
   setAPIKey,
   setProviderConfig,
@@ -58,9 +66,12 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) {
-    // Evict stale cache entries (>90 days unused) on each 5-min tick
     evictStaleCacheEntries().catch(() => {});
-    // Task 6.2: read sync queue, push to Supabase
+    refreshSessionIfNeeded().catch(() => {});
+    // Push pending local changes to Supabase when cloud sync is enabled
+    getSettings().then(s => {
+      if (s.cloudSync) pushSyncQueue().catch(() => {});
+    }).catch(() => {});
   }
 });
 
@@ -89,9 +100,9 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   },
 
   ADD_ENTRY: async (payload) => {
-    const data = payload as NewEntryData;
-    const created = await addEntry(data);
-    // Compute embedding fire-and-forget so the response isn't delayed
+    const data    = payload as NewEntryData;
+    const userId  = (await getCurrentUserId()) ?? '';
+    const created = await addEntry(data, userId);
     embedEntry(created).catch(() => {});
     return created;
   },
@@ -210,14 +221,12 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const { sig, value } = payload as { sig: SerializableFieldSig; value: string };
 
     const inferred = inferCanonicalKey(sig);
-    // inferred === '' means a sensitive field pattern matched — refuse
-    if (inferred === '') {
-      throw new Error('Sensitive field — will not learn this value');
-    }
+    if (inferred === '') throw new Error('Sensitive field — will not learn this value');
 
     const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
     const category     = inferCategory(canonicalKey);
     const displayLabel = inferDisplayLabel(sig);
+    const userId       = (await getCurrentUserId()) ?? '';
 
     const data: NewEntryData = {
       canonical_key: canonicalKey,
@@ -229,9 +238,31 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       sensitive:     false,
     };
 
-    const created = await addEntry(data);
+    const created = await addEntry(data, userId);
     embedEntry(created).catch(() => {});
     return created;
+  },
+
+  // ── Auth (Task 6.1) ────────────────────────────────────────────────────────
+
+  SIGN_IN: async (payload) => {
+    const { email, password } = payload as { email: string; password: string };
+    const session = await signIn(email, password);
+    // Pull cloud entries on successful login
+    pullFromCloud().catch(() => {});
+    return { userId: session.userId, email: session.email };
+  },
+
+  SIGN_OUT: async () => {
+    await signOut();
+    return { ok: true };
+  },
+
+  GET_SESSION: async () => {
+    const session = await getSession();
+    if (!session) return null;
+    // Never expose tokens to popup — return only display info
+    return { userId: session.userId, email: session.email, expiresAt: session.expiresAt };
   },
 
   GENERATE_ESSAY: () => {
@@ -242,8 +273,9 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     throw new Error('Not implemented (Task 6.3)');
   },
 
-  SYNC_NOW: () => {
-    throw new Error('Not implemented (Task 6.2)');
+  SYNC_NOW: async () => {
+    const [push, pull] = await Promise.all([pushSyncQueue(), pullFromCloud()]);
+    return { pushed: push.pushed, failed: push.failed, pulled: pull.pulled };
   },
 
   FILL_FIELD: () => {

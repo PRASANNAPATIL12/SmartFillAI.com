@@ -1,16 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import type { AIProviderName } from '@/ai-providers';
 import { getProviderConfig, getAPIKey } from '@/ai-providers';
-import SetupScreen from './components/SetupScreen';
-import HomeScreen from './components/HomeScreen';
+import { sendToBackground } from './utils/messages';
+import SetupScreen   from './components/SetupScreen';
+import LoginScreen   from './components/LoginScreen';
+import HomeScreen    from './components/HomeScreen';
 import ProfileScreen from './components/ProfileScreen';
 import SettingsScreen from './components/SettingsScreen';
 
-type Screen = 'loading' | 'setup' | 'home' | 'profile' | 'settings';
+type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings';
+
+interface SessionInfo {
+  userId:    string;
+  email:     string;
+  expiresAt: number;
+}
 
 export default function App(): React.ReactElement {
-  const [screen, setScreen] = useState<Screen>('loading');
+  const [screen,   setScreen]   = useState<Screen>('loading');
   const [provider, setProvider] = useState<AIProviderName>('groq');
+  const [session,  setSession]  = useState<SessionInfo | null>(null);
 
   useEffect(() => {
     async function bootstrap(): Promise<void> {
@@ -18,7 +27,12 @@ export default function App(): React.ReactElement {
         const cfg = await getProviderConfig();
         setProvider(cfg.provider);
         const key = await getAPIKey(cfg.provider);
-        setScreen(key ? 'home' : 'setup');
+        if (!key) { setScreen('setup'); return; }
+
+        // Check cloud session (optional — app works without it)
+        const s = await sendToBackground<SessionInfo | null>('GET_SESSION');
+        setSession(s);
+        setScreen('home');
       } catch {
         setScreen('setup');
       }
@@ -31,8 +45,16 @@ export default function App(): React.ReactElement {
     setScreen('home');
   }
 
-  function handleProviderChange(p: AIProviderName): void {
-    setProvider(p);
+  function handleLoginSuccess(email: string): void {
+    sendToBackground<SessionInfo | null>('GET_SESSION').then(s => setSession(s)).catch(() => {});
+    // Suppress unused-var warning for email — it's used to keep the callback signature clear
+    void email;
+    setScreen('home');
+  }
+
+  function handleSignOut(): void {
+    sendToBackground('SIGN_OUT').catch(() => {});
+    setSession(null);
   }
 
   if (screen === 'loading') {
@@ -47,6 +69,15 @@ export default function App(): React.ReactElement {
     return <SetupScreen initialProvider={provider} onDone={handleSetupDone} />;
   }
 
+  if (screen === 'login') {
+    return (
+      <LoginScreen
+        onSuccess={handleLoginSuccess}
+        onSkip={() => setScreen('home')}
+      />
+    );
+  }
+
   if (screen === 'profile') {
     return <ProfileScreen onBack={() => setScreen('home')} />;
   }
@@ -56,17 +87,19 @@ export default function App(): React.ReactElement {
       <SettingsScreen
         provider={provider}
         onBack={() => setScreen('home')}
-        onProviderChange={handleProviderChange}
+        onProviderChange={p => setProvider(p)}
       />
     );
   }
 
-  // home
   return (
     <HomeScreen
       provider={provider}
+      session={session}
       onGoProfile={() => setScreen('profile')}
       onGoSettings={() => setScreen('settings')}
+      onGoLogin={() => setScreen('login')}
+      onSignOut={handleSignOut}
     />
   );
 }

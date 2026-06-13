@@ -34,13 +34,13 @@ export async function getEntryByKey(canonicalKey: string): Promise<ProfileEntry 
 
 export type NewEntryData = Omit<ProfileEntry, 'id' | 'userId' | 'created_at' | 'updated_at' | 'use_count' | 'last_used'>;
 
-export async function addEntry(data: NewEntryData): Promise<ProfileEntry> {
+export async function addEntry(data: NewEntryData, userId = ''): Promise<ProfileEntry> {
   const profile = await readProfile();
 
   const entry: ProfileEntry = {
     ...data,
     id: crypto.randomUUID(),
-    userId: '',
+    userId,
     created_at: Date.now(),
     updated_at: Date.now(),
     use_count: 0,
