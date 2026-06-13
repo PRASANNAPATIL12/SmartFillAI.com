@@ -1,4 +1,5 @@
 import type { MessageType, ProfileEntry } from '@shared/types';
+import { inferCanonicalKey, inferCategory, inferDisplayLabel, type SerializableFieldSig } from './field-learner';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -205,8 +206,32 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     throw new Error('MATCH_FIELDS is handled in the content script (Task 4.1)');
   },
 
-  LEARN_FIELD: () => {
-    throw new Error('Not implemented (Task 5.1)');
+  LEARN_FIELD: async (payload) => {
+    const { sig, value } = payload as { sig: SerializableFieldSig; value: string };
+
+    const inferred = inferCanonicalKey(sig);
+    // inferred === '' means a sensitive field pattern matched — refuse
+    if (inferred === '') {
+      throw new Error('Sensitive field — will not learn this value');
+    }
+
+    const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
+    const category     = inferCategory(canonicalKey);
+    const displayLabel = inferDisplayLabel(sig);
+
+    const data: NewEntryData = {
+      canonical_key: canonicalKey,
+      display_label: displayLabel,
+      aliases:       [],
+      value,
+      category,
+      source:        'learned',
+      sensitive:     false,
+    };
+
+    const created = await addEntry(data);
+    embedEntry(created).catch(() => {});
+    return created;
   },
 
   GENERATE_ESSAY: () => {

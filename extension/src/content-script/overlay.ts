@@ -14,6 +14,12 @@ interface PillTarget {
   result: MatchResult;
 }
 
+export interface LearnTarget {
+  el: HTMLElement;
+  label: string;
+  value: string;
+}
+
 // ── Shadow host + pill element ────────────────────────────────────────────────
 
 const HOST_ID = 'ditto-overlay-host';
@@ -68,6 +74,8 @@ function ensureHost(): ShadowRoot {
     .pill:active { background: #3730a3; }
     .pill.essay  { background: #059669; box-shadow: 0 2px 8px rgba(5,150,105,0.4); }
     .pill.essay:hover { background: #047857; }
+    .pill.learn  { background: #d97706; box-shadow: 0 2px 8px rgba(217,119,6,0.4); }
+    .pill.learn:hover { background: #b45309; }
     .pill .icon  { font-size: 14px; line-height: 1; }
     .pill .label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
     .pill .value { opacity: 0.75; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
@@ -84,51 +92,62 @@ function ensureHost(): ShadowRoot {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-type FillCallback = (target: PillTarget) => void;
+type FillCallback  = (target: PillTarget) => void;
+type LearnCallback = (target: LearnTarget) => void;
 
-let _fillCallback: FillCallback | null = null;
+let _fillCallback:  FillCallback  | null = null;
+let _learnCallback: LearnCallback | null = null;
 let _hideTimer: ReturnType<typeof setTimeout> | undefined;
 let _currentTarget: PillTarget | null = null;
+// Callback invoked on pill click — set each time showPill / showLearnPill is called
+let _activePillCallback: (() => void) | null = null;
 
 export function initOverlay(onFill: FillCallback): void {
   _fillCallback = onFill;
+}
+
+export function initLearnOverlay(onLearn: LearnCallback): void {
+  _learnCallback = onLearn;
+}
+
+function ensurePill(sh: ShadowRoot): HTMLElement {
+  if (pillEl) return pillEl;
+  pillEl = document.createElement('div');
+  pillEl.className = 'pill';
+  pillEl.addEventListener('mouseenter', () => clearTimeout(_hideTimer));
+  pillEl.addEventListener('mouseleave', () => schedulePillHide(200));
+  pillEl.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    _activePillCallback?.();
+    hidePill();
+  });
+  sh.appendChild(pillEl);
+  return pillEl;
 }
 
 export function showPill(target: PillTarget): void {
   _currentTarget = target;
   clearTimeout(_hideTimer);
 
-  const sh = ensureHost();
+  const sh  = ensureHost();
+  const pel = ensurePill(sh);
 
-  if (!pillEl) {
-    pillEl = document.createElement('div');
-    pillEl.className = 'pill';
-    pillEl.addEventListener('mouseenter', () => clearTimeout(_hideTimer));
-    pillEl.addEventListener('mouseleave', () => schedulePillHide(200));
-    pillEl.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (_fillCallback && _currentTarget) {
-        _fillCallback(_currentTarget);
-        hidePill();
-      }
-    });
-    sh.appendChild(pillEl);
-  }
+  _activePillCallback = () => _fillCallback?.(_currentTarget!);
 
   // Rebuild content
   const isEssay = target.result.status === 'ESSAY';
-  pillEl.className = isEssay ? 'pill essay' : 'pill';
+  pel.className = isEssay ? 'pill essay' : 'pill';
 
   if (isEssay) {
-    pillEl.innerHTML = `
+    pel.innerHTML = `
       <span class="icon">✍️</span>
       <span class="label">Generate essay</span>
     `;
   } else {
     const label = target.entry.display_label;
     const value = target.entry.sensitive ? '••••' : truncate(target.entry.value, 12);
-    pillEl.innerHTML = `
+    pel.innerHTML = `
       <span class="icon">⚡</span>
       <span class="label">${escapeHtml(label)}</span>
       <span class="sep">·</span>
@@ -140,12 +159,35 @@ export function showPill(target: PillTarget): void {
   positionPill(target.el);
 }
 
+export function showLearnPill(target: LearnTarget): void {
+  _currentTarget = null;
+  clearTimeout(_hideTimer);
+
+  const sh  = ensureHost();
+  const pel = ensurePill(sh);
+
+  _activePillCallback = () => _learnCallback?.(target);
+
+  pel.className = 'pill learn';
+  pel.innerHTML = `
+    <span class="icon">💡</span>
+    <span class="label">Save ${escapeHtml(truncate(target.label, 20))}?</span>
+    <span class="sep">·</span>
+    <span class="value">${escapeHtml(truncate(target.value, 12))}</span>
+  `;
+
+  positionPill(target.el);
+  // Learn pill auto-dismisses after 5 s if the user doesn't interact
+  _hideTimer = setTimeout(hidePill, 5000);
+}
+
 export function hidePill(): void {
   if (pillEl) {
     pillEl.remove();
     pillEl = null;
   }
   _currentTarget = null;
+  _activePillCallback = null;
 }
 
 export function schedulePillHide(delayMs = 400): void {

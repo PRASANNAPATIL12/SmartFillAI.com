@@ -1,10 +1,10 @@
-import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature } from '@shared/types';
+import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature, UserSettings } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
 import { fillElement } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
-import { initOverlay, showPill, schedulePillHide } from './overlay';
+import { initOverlay, initLearnOverlay, showPill, showLearnPill, schedulePillHide } from './overlay';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -20,20 +20,25 @@ const matchMap = new Map<HTMLElement, FieldState>();
 let profile: ProfileEntry[] = [];
 let profileLoaded = false;
 let scanTimer: ReturnType<typeof setTimeout> | undefined;
+let autoSave = true; // default; overwritten after GET_SETTINGS resolves
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
   injectStyles();
 
-  try {
-    profile = await sendToBackground<ProfileEntry[]>('GET_PROFILE');
-  } catch {
-    profile = [];
-  }
+  // Fetch profile and settings in parallel
+  const [fetchedProfile, fetchedSettings] = await Promise.allSettled([
+    sendToBackground<ProfileEntry[]>('GET_PROFILE'),
+    sendToBackground<UserSettings>('GET_SETTINGS'),
+  ]);
+
+  profile   = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
+  autoSave  = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave : true;
 
   profileLoaded = true;
   initOverlay(handlePillFill);
+  initLearnOverlay(handleLearnSave);
   await scanFields();
   // Step 5 runs after deterministic steps — async, never blocks initial render
   runStep5().catch(() => {});
@@ -218,12 +223,12 @@ function applyHint(
     attachPillListeners(el, entry, result);
   } else if (result.status === 'ESSAY') {
     el.dataset.dittoMatch = 'essay';
+  } else if (result.status === 'UNKNOWN') {
+    attachLearnListeners(el);
   }
 }
 
 function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: MatchResult): void {
-  // Remove any previously attached listeners via cloneNode + re-insert is too expensive.
-  // Use dataset flag to avoid double-attaching.
   if (el.dataset.dittoListeners === 'true') return;
   el.dataset.dittoListeners = 'true';
 
@@ -234,6 +239,77 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('focus',      show);
   el.addEventListener('mouseleave', hide);
   el.addEventListener('blur',       hide);
+}
+
+function attachLearnListeners(el: HTMLElement): void {
+  if (el.dataset.dittoLearnListeners === 'true') return;
+  el.dataset.dittoLearnListeners = 'true';
+
+  // Capture the original value on focus so we know if user actually typed something
+  el.addEventListener('focus', () => {
+    el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
+  });
+
+  el.addEventListener('blur', () => {
+    // Skip if Ditto already filled this field
+    if (el.dataset.dittoFilled === 'true') return;
+
+    const currentValue = (el as HTMLInputElement).value ?? '';
+    const preFocus     = el.dataset.dittoPreFocusValue ?? '';
+
+    // Only offer to learn if the user typed something non-empty and different
+    if (!currentValue || currentValue === preFocus) return;
+
+    const state = matchMap.get(el);
+    if (!state || state.result.status !== 'UNKNOWN') return;
+
+    if (autoSave) {
+      // Silent save — no confirm pill needed
+      doLearnField(el, state.sig, currentValue).catch(() => {});
+    } else {
+      // Show amber confirm pill
+      const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder || state.sig.name || state.sig.id || 'Field';
+      showLearnPill({ el, label, value: currentValue });
+    }
+  });
+}
+
+async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string): Promise<void> {
+  const { element: _el, ...serializableSig } = sig;
+  try {
+    const newEntry = await sendToBackground<ProfileEntry>('LEARN_FIELD', {
+      sig: serializableSig,
+      value,
+    });
+    applyLearnedEntry(el, sig, newEntry);
+  } catch {
+    // Silently ignore — sensitive field or background unavailable
+  }
+}
+
+function handleLearnSave(target: { el: HTMLElement; label: string; value: string }): void {
+  const state = matchMap.get(target.el);
+  if (!state) return;
+  doLearnField(target.el, state.sig, target.value).catch(() => {});
+}
+
+function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: ProfileEntry): void {
+  // Add to local profile so future scans find it
+  profile.push(newEntry);
+
+  const result: MatchResult = {
+    status:          'MATCHED',
+    profileEntryId:  newEntry.id,
+    confidence:      1.0,
+    reason:          'learned by user',
+    matchStep:       0,
+  };
+
+  matchMap.set(el, { sig, result, entry: newEntry });
+
+  // Transition field from UNKNOWN → MATCHED visually
+  delete el.dataset.dittoLearnListeners; // allow fill listeners to attach
+  applyHint(el, result, newEntry);
 }
 
 function injectStyles(): void {
