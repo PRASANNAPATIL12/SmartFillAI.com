@@ -4,6 +4,7 @@ import { matchField, fingerprint } from '@/matcher';
 import { fillElement } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
+import { initOverlay, showPill, schedulePillHide } from './overlay';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -32,6 +33,7 @@ async function init(): Promise<void> {
   }
 
   profileLoaded = true;
+  initOverlay(handlePillFill);
   await scanFields();
   // Step 5 runs after deterministic steps — async, never blocks initial render
   runStep5().catch(() => {});
@@ -183,7 +185,19 @@ function fillAll(): { filled: number; skipped: number } {
   return { filled, skipped };
 }
 
-// ── Visual hints ──────────────────────────────────────────────────────────────
+// ── Pill fill callback ────────────────────────────────────────────────────────
+
+function handlePillFill(target: { el: HTMLElement; entry: ProfileEntry }): void {
+  const ok = fillElement(
+    target.el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+    target.entry.value
+  );
+  if (ok) {
+    sendToBackground('RECORD_USE', { id: target.entry.id }).catch(() => {});
+  }
+}
+
+// ── Visual hints + hover listeners ───────────────────────────────────────────
 
 function applyHint(
   el: HTMLElement,
@@ -201,9 +215,25 @@ function applyHint(
   if (result.status === 'MATCHED' && entry) {
     el.dataset.dittoMatch = 'true';
     el.dataset.dittoKey = entry.canonical_key;
+    attachPillListeners(el, entry, result);
   } else if (result.status === 'ESSAY') {
     el.dataset.dittoMatch = 'essay';
   }
+}
+
+function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: MatchResult): void {
+  // Remove any previously attached listeners via cloneNode + re-insert is too expensive.
+  // Use dataset flag to avoid double-attaching.
+  if (el.dataset.dittoListeners === 'true') return;
+  el.dataset.dittoListeners = 'true';
+
+  const show = (): void => showPill({ el, entry, result });
+  const hide = (): void => schedulePillHide(400);
+
+  el.addEventListener('mouseenter', show);
+  el.addEventListener('focus',      show);
+  el.addEventListener('mouseleave', hide);
+  el.addEventListener('blur',       hide);
 }
 
 function injectStyles(): void {
