@@ -22,7 +22,14 @@ import {
 import { getSettings, updateSettings } from './settings-store';
 import { computeEmbedding, warmUp } from '@/ml/embedder';
 import { entryEmbedText, matchByEmbedding } from '@/ml/step5';
-import { setEmbedding, setCachedField } from '@/storage/idb';
+import {
+  setEmbedding,
+  setFieldCacheEntry,
+  loadFieldCacheForDomain,
+  incrementCacheUse,
+  evictStaleCacheEntries,
+  type FieldCacheEntry,
+} from '@/storage/idb';
 
 // ── Alarm name ────────────────────────────────────────────────────────────────
 
@@ -46,10 +53,12 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 5 });
 });
 
-// ── Alarm handler (sync stub — full implementation in Task 6.2) ───────────────
+// ── Alarm handler ─────────────────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) {
+    // Evict stale cache entries (>90 days unused) on each 5-min tick
+    evictStaleCacheEntries().catch(() => {});
     // Task 6.2: read sync queue, push to Supabase
   }
 });
@@ -135,6 +144,23 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     return { monthly, total, byProvider };
   },
 
+  // ── Field cache ────────────────────────────────────────────────────────────
+
+  GET_FIELD_CACHE: async (payload) => {
+    const { domain } = payload as { domain: string };
+    const cacheMap = await loadFieldCacheForDomain(domain);
+    // Convert Map → plain object for serialisation across the message channel
+    const result: Record<string, FieldCacheEntry> = {};
+    for (const [key, val] of cacheMap) result[key] = val;
+    return result;
+  },
+
+  INCREMENT_CACHE_USE: async (payload) => {
+    const { fingerprint } = payload as { fingerprint: string };
+    await incrementCacheUse(fingerprint);
+    return { ok: true };
+  },
+
   // ── ML / Step 5 ────────────────────────────────────────────────────────────
 
   STEP5_MATCH: async (payload) => {
@@ -149,7 +175,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       profileEntryId: string;
       confidence: number;
     };
-    await setCachedField({
+    await setFieldCacheEntry({
       fingerprint,
       profileEntryId,
       confidence,

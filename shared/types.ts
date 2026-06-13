@@ -292,9 +292,12 @@ export type MessageType =
   | 'UPDATE_SETTINGS'
   // AI cost
   | 'GET_AI_COST'
+  // Field cache
+  | 'GET_FIELD_CACHE'
+  | 'CACHE_FIELD_MATCH'
+  | 'INCREMENT_CACHE_USE'
   // ML / Step 5
   | 'STEP5_MATCH'
-  | 'CACHE_FIELD_MATCH'
   | 'COMPUTE_EMBEDDINGS'
   // Deferred (Tasks 4-8)
   | 'MATCH_FIELDS'

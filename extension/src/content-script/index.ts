@@ -32,21 +32,32 @@ async function init(): Promise<void> {
   }
 
   profileLoaded = true;
-  scanFields();
-  // Step 5 runs after deterministic steps so it never blocks the initial render
+  await scanFields();
+  // Step 5 runs after deterministic steps — async, never blocks initial render
   runStep5().catch(() => {});
 }
 
 // ── Field scanning ────────────────────────────────────────────────────────────
 
-function scanFields(): void {
+async function scanFields(): Promise<void> {
   if (!profileLoaded) return;
 
   const domain = window.location.hostname;
-  // Task 3.2: replace with IndexedDB-backed cache
-  const cache = new Map<string, FieldCacheEntry>();
+
+  // Load persistent cache from background (backed by IndexedDB)
+  let cache = new Map<string, FieldCacheEntry>();
+  try {
+    const raw = await sendToBackground<Record<string, FieldCacheEntry>>(
+      'GET_FIELD_CACHE',
+      { domain }
+    );
+    cache = new Map(Object.entries(raw));
+  } catch {
+    // Proceed with empty cache if background is unavailable
+  }
 
   const fields = extractAllFields(document);
+  const newCacheEntries: Array<{ fingerprint: string; profileEntryId: string; confidence: number }> = [];
 
   for (const sig of fields) {
     const el = sig.element as HTMLElement | undefined;
@@ -59,6 +70,29 @@ function scanFields(): void {
 
     matchMap.set(el, { sig, result, entry });
     applyHint(el, result, entry);
+
+    // Persist new Step-4 matches so future visits use Step-2 cache
+    if (result.status === 'MATCHED' && result.matchStep === 4 && result.profileEntryId) {
+      const fp = fingerprint(sig, domain);
+      if (!cache.has(fp)) {
+        newCacheEntries.push({
+          fingerprint: fp,
+          profileEntryId: result.profileEntryId,
+          confidence: result.confidence ?? 0.9,
+        });
+      }
+    }
+
+    // Increment use count for existing cache hits (Step 2)
+    if (result.matchStep === 2) {
+      const fp = fingerprint(sig, domain);
+      sendToBackground('INCREMENT_CACHE_USE', { fingerprint: fp }).catch(() => {});
+    }
+  }
+
+  // Fire-and-forget: save new cache entries for next visit
+  for (const entry of newCacheEntries) {
+    sendToBackground('CACHE_FIELD_MATCH', entry).catch(() => {});
   }
 }
 
@@ -241,7 +275,8 @@ if (document.readyState === 'loading') {
 // Debounced re-scan on DOM mutations (SPA route changes render new forms)
 const observer = new MutationObserver(() => {
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(scanFields, 300);
+  // scanFields is async; the returned Promise is intentionally ignored here
+  scanTimer = setTimeout(() => { scanFields().catch(() => {}); }, 300);
 });
 
 function startObserver(): void {

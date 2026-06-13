@@ -7,6 +7,10 @@
  * ships no runtime deps beyond the AI SDKs.
  */
 
+import type { FieldCacheEntry } from '@shared/types';
+
+export type { FieldCacheEntry };
+
 const DB_NAME = 'ditto_v1';
 const DB_VERSION = 1;
 const STORE_FIELD_CACHE = 'field_cache';
@@ -83,27 +87,20 @@ function idbGetAll<T>(store: string): Promise<T[]> {
 }
 
 // ── Field cache ───────────────────────────────────────────────────────────────
+// FieldCacheEntry is imported from @shared/types and re-exported above.
 
-export interface CachedField {
-  fingerprint: string;
-  profileEntryId: string;
-  confidence: number;
-  useCount: number;
-  lastUsed: number;
+export async function getFieldCacheEntry(fingerprint: string): Promise<FieldCacheEntry | undefined> {
+  return idbGet<FieldCacheEntry>(STORE_FIELD_CACHE, fingerprint);
 }
 
-export async function getCachedField(fingerprint: string): Promise<CachedField | undefined> {
-  return idbGet<CachedField>(STORE_FIELD_CACHE, fingerprint);
-}
-
-export async function setCachedField(entry: CachedField): Promise<void> {
+export async function setFieldCacheEntry(entry: FieldCacheEntry): Promise<void> {
   return idbPut(STORE_FIELD_CACHE, entry);
 }
 
 export async function incrementCacheUse(fingerprint: string): Promise<void> {
-  const existing = await getCachedField(fingerprint);
+  const existing = await getFieldCacheEntry(fingerprint);
   if (!existing) return;
-  await setCachedField({
+  await setFieldCacheEntry({
     ...existing,
     useCount: existing.useCount + 1,
     lastUsed: Date.now(),
@@ -112,9 +109,9 @@ export async function incrementCacheUse(fingerprint: string): Promise<void> {
 
 // domain is reserved for future scoped filtering; currently loads all entries
 // since the cache is typically small (<1000 entries total across all domains)
-export async function loadFieldCacheForDomain(_domain: string): Promise<Map<string, CachedField>> {
-  const all = await idbGetAll<CachedField>(STORE_FIELD_CACHE);
-  const map = new Map<string, CachedField>();
+export async function loadFieldCacheForDomain(_domain: string): Promise<Map<string, FieldCacheEntry>> {
+  const all = await idbGetAll<FieldCacheEntry>(STORE_FIELD_CACHE);
+  const map = new Map<string, FieldCacheEntry>();
   for (const entry of all) {
     map.set(entry.fingerprint, entry);
   }
@@ -123,7 +120,7 @@ export async function loadFieldCacheForDomain(_domain: string): Promise<Map<stri
 
 export async function evictStaleCacheEntries(maxAgeMs = 90 * 24 * 60 * 60 * 1000): Promise<void> {
   const cutoff = Date.now() - maxAgeMs;
-  const all = await idbGetAll<CachedField>(STORE_FIELD_CACHE);
+  const all = await idbGetAll<FieldCacheEntry>(STORE_FIELD_CACHE);
   for (const entry of all) {
     if (entry.lastUsed < cutoff) {
       await idbDelete(STORE_FIELD_CACHE, entry.fingerprint);
