@@ -57,7 +57,7 @@ export interface Profile {
 // ============================================================================
 
 export interface FieldSignature {
-  /** Text of associated <label> element */
+  /** Text of associated <label> element (resolved from all label sources) */
   label: string;
 
   /** Placeholder attribute */
@@ -72,7 +72,10 @@ export interface FieldSignature {
   /** aria-label attribute */
   ariaLabel: string;
 
-  /** Input type (text, email, tel, textarea, etc.) */
+  /** autocomplete attribute (HTML5 standard — most reliable signal) */
+  autocomplete: string;
+
+  /** Input type (text, email, tel, textarea, select, etc.) */
   inputType: string;
 
   /** maxLength attribute (null if not set) */

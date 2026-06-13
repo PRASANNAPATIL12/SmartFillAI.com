@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ditto-primary: #0ea5e9;
+  --ditto-bg: #ffffff;
+  --ditto-surface: #f8fafc;
+  --ditto-border: #e2e8f0;
+  --ditto-text: #1e293b;
+  --ditto-muted: #64748b;
+}
+
+body {
+  width: 360px;
+  min-height: 400px;
+  max-height: 600px;
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--ditto-bg);
+  color: var(--ditto-text);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#root {
+  width: 100%;
+  min-height: 400px;
+}

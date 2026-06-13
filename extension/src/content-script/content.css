@@ -1,0 +1,16 @@
+/* Ditto overlay styles — injected alongside content-script.
+   Full styles added in Task 4.2 (floating pill overlay).
+*/
+
+.ditto-root {
+  all: initial;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #1a1a1a;
+  box-sizing: border-box;
+}
+
+.ditto-root * {
+  box-sizing: border-box;
+}
