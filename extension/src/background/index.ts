@@ -10,6 +10,7 @@ import {
 import { pushSyncQueue, pullFromCloud } from './sync-engine';
 import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
 import { generateEssay } from './essay-generator';
+import { classifyFields, type FieldClassifySpec } from './llm-classifier';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -214,6 +215,13 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   },
 
   // ── Deferred stubs (Tasks 4–8) ─────────────────────────────────────────────
+
+  STEP6_CLASSIFY: async (payload) => {
+    const { fieldTexts } = payload as { fieldTexts: string[] };
+    if (!Array.isArray(fieldTexts) || fieldTexts.length === 0) return [];
+    const specs: FieldClassifySpec[] = fieldTexts.map((t, i) => ({ fieldIndex: i, fieldText: t }));
+    return classifyFields(specs);
+  },
 
   MATCH_FIELDS: () => {
     throw new Error('MATCH_FIELDS is handled in the content script (Task 4.1)');

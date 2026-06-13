@@ -42,8 +42,8 @@ async function init(): Promise<void> {
   initLearnOverlay(handleLearnSave);
   initEssayOverlay(handleEssayOpen);
   await scanFields();
-  // Step 5 runs after deterministic steps — async, never blocks initial render
-  runStep5().catch(() => {});
+  // Steps 5+6 run after deterministic steps — async, never blocks initial render
+  runStep5().then(() => runStep6().catch(() => {})).catch(() => {});
 }
 
 // ── Field scanning ────────────────────────────────────────────────────────────
@@ -155,6 +155,60 @@ async function runStep5(): Promise<void> {
     } catch {
       // Step 5 unavailable (model not loaded, network error) — leave as UNKNOWN
     }
+  }
+}
+
+// ── Step 6: LLM batch classifier for remaining UNKNOWN fields ─────────────────
+
+async function runStep6(): Promise<void> {
+  if (profile.length === 0) return; // nothing to match against
+
+  const domain = window.location.hostname;
+  const unknownFields: Array<{ el: HTMLElement; sig: FieldSignature }> = [];
+
+  for (const [el, state] of matchMap) {
+    if (state.result.status === 'UNKNOWN') {
+      const text = fieldEmbedText(state.sig);
+      if (text.trim()) unknownFields.push({ el, sig: state.sig });
+    }
+  }
+
+  if (unknownFields.length === 0) return;
+
+  const fieldTexts = unknownFields.map(f => fieldEmbedText(f.sig));
+
+  try {
+    const results = await sendToBackground<
+      Array<{ fieldIndex: number; profileEntryId: string | null; confidence: number }>
+    >('STEP6_CLASSIFY', { fieldTexts });
+
+    for (const r of results) {
+      if (!r.profileEntryId || r.confidence < 0.7) continue;
+      const { el, sig } = unknownFields[r.fieldIndex];
+      const entry = profile.find(e => e.id === r.profileEntryId);
+      if (!entry) continue;
+
+      const result: MatchResult = {
+        status:          'MATCHED',
+        profileEntryId:  entry.id,
+        confidence:      r.confidence,
+        reason:          'LLM classification (Step 6)',
+        matchStep:       6,
+      };
+
+      matchMap.set(el, { sig, result, entry });
+      applyHint(el, result, entry, sig);
+
+      // Cache so future visits skip Steps 5+6 for the same field
+      const fp = fingerprint(sig, domain);
+      sendToBackground('CACHE_FIELD_MATCH', {
+        fingerprint: fp,
+        profileEntryId: entry.id,
+        confidence: r.confidence,
+      }).catch(() => {});
+    }
+  } catch {
+    // Step 6 unavailable (no API key, network error) — leave fields as UNKNOWN
   }
 }
 

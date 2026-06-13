@@ -303,6 +303,8 @@ export type MessageType =
   | 'SIGN_IN'
   | 'SIGN_OUT'
   | 'GET_SESSION'
+  // Step 6 LLM classifier (Task 8.1)
+  | 'STEP6_CLASSIFY'
   // Deferred (Tasks 4-8)
   | 'MATCH_FIELDS'
   | 'FILL_FIELD'
