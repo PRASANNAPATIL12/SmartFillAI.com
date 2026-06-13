@@ -9,6 +9,7 @@ import {
 } from './auth-manager';
 import { pushSyncQueue, pullFromCloud } from './sync-engine';
 import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
+import { generateEssay } from './essay-generator';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -266,8 +267,11 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     return { userId: session.userId, email: session.email, expiresAt: session.expiresAt };
   },
 
-  GENERATE_ESSAY: () => {
-    throw new Error('Not implemented (Task 7.3)');
+  GENERATE_ESSAY: async (payload) => {
+    const { question, domain } = payload as { question: string; domain: string };
+    if (!question?.trim()) throw new Error('Question text is required');
+    const essay = await generateEssay(question, domain);
+    return { essay };
   },
 
   PARSE_RESUME: async (payload) => {

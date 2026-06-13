@@ -4,7 +4,8 @@ import { matchField, fingerprint } from '@/matcher';
 import { fillElement } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
-import { initOverlay, initLearnOverlay, showPill, showLearnPill, schedulePillHide } from './overlay';
+import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel } from './overlay';
+import type { EssayTarget } from './overlay';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -39,6 +40,7 @@ async function init(): Promise<void> {
   profileLoaded = true;
   initOverlay(handlePillFill);
   initLearnOverlay(handleLearnSave);
+  initEssayOverlay(handleEssayOpen);
   await scanFields();
   // Step 5 runs after deterministic steps — async, never blocks initial render
   runStep5().catch(() => {});
@@ -76,7 +78,7 @@ async function scanFields(): Promise<void> {
       : undefined;
 
     matchMap.set(el, { sig, result, entry });
-    applyHint(el, result, entry);
+    applyHint(el, result, entry, sig);
 
     // Persist new Step-4 matches so future visits use Step-2 cache
     if (result.status === 'MATCHED' && result.matchStep === 4 && result.profileEntryId) {
@@ -141,7 +143,7 @@ async function runStep5(): Promise<void> {
       };
 
       matchMap.set(el, { sig, result, entry });
-      applyHint(el, result, entry);
+      applyHint(el, result, entry, sig);
 
       // Cache this match so future page visits skip Step 5 for the same field
       const fp = fingerprint(sig, domain);
@@ -192,7 +194,8 @@ function fillAll(): { filled: number; skipped: number } {
 
 // ── Pill fill callback ────────────────────────────────────────────────────────
 
-function handlePillFill(target: { el: HTMLElement; entry: ProfileEntry }): void {
+function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): void {
+  if (!target.entry) return; // ESSAY pills have no entry
   const ok = fillElement(
     target.el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
     target.entry.value
@@ -207,7 +210,8 @@ function handlePillFill(target: { el: HTMLElement; entry: ProfileEntry }): void 
 function applyHint(
   el: HTMLElement,
   result: MatchResult,
-  entry?: ProfileEntry
+  entry?: ProfileEntry,
+  sig?: FieldSignature
 ): void {
   // Clear previous state
   delete el.dataset.dittoMatch;
@@ -223,6 +227,7 @@ function applyHint(
     attachPillListeners(el, entry, result);
   } else if (result.status === 'ESSAY') {
     el.dataset.dittoMatch = 'essay';
+    if (sig) attachEssayPillListeners(el, sig);
   } else if (result.status === 'UNKNOWN') {
     attachLearnListeners(el);
   }
@@ -274,6 +279,32 @@ function attachLearnListeners(el: HTMLElement): void {
   });
 }
 
+function attachEssayPillListeners(el: HTMLElement, sig: FieldSignature): void {
+  if (el.dataset.dittoEssayListeners === 'true') return;
+  el.dataset.dittoEssayListeners = 'true';
+
+  const question = sig.label || sig.ariaLabel || sig.placeholder || sig.name || sig.id || 'Essay question';
+  const show = (): void => showPill({ el, result: { status: 'ESSAY' }, question });
+  const hide = (): void => schedulePillHide(400);
+
+  el.addEventListener('mouseenter', show);
+  el.addEventListener('focus',      show);
+  el.addEventListener('mouseleave', hide);
+  el.addEventListener('blur',       hide);
+}
+
+function handleEssayOpen(target: EssayTarget): void {
+  // Provide the real onGenerate that calls the background
+  const realTarget: EssayTarget = {
+    ...target,
+    onGenerate: () => sendToBackground<{ essay: string }>('GENERATE_ESSAY', {
+      question: target.question,
+      domain:   window.location.hostname,
+    }).then(r => r.essay),
+  };
+  showEssayPanel(realTarget);
+}
+
 async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string): Promise<void> {
   const { element: _el, ...serializableSig } = sig;
   try {
@@ -309,7 +340,7 @@ function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: Profi
 
   // Transition field from UNKNOWN → MATCHED visually
   delete el.dataset.dittoLearnListeners; // allow fill listeners to attach
-  applyHint(el, result, newEntry);
+  applyHint(el, result, newEntry, sig);
 }
 
 function injectStyles(): void {
