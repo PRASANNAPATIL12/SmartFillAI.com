@@ -210,9 +210,21 @@ export interface UserSettings {
 
   /** AI provider configuration */
   aiProvider: {
-    provider: 'groq' | 'openai' | 'anthropic' | 'local';
+    provider: 'groq' | 'gemini';
     defaultModel?: string;
   };
+}
+
+// ============================================================================
+// Auth Session
+// ============================================================================
+
+export interface Session {
+  accessToken: string;
+  refreshToken: string;
+  userId: string;
+  email: string;
+  expiresAt: number; // Unix timestamp ms
 }
 
 // ============================================================================
@@ -265,17 +277,29 @@ export const STORAGE_KEYS = {
 // ============================================================================
 
 export type MessageType =
+  // Health / diagnostics
+  | 'PING'
+  | 'GET_PROVIDER'
+  // Profile CRUD
   | 'GET_PROFILE'
-  | 'UPDATE_PROFILE'
+  | 'ADD_ENTRY'
+  | 'UPDATE_ENTRY'
+  | 'DELETE_ENTRY'
+  | 'RECORD_USE'
+  | 'UPDATE_PROFILE'   // bulk replace (used by sync engine)
+  // Settings
+  | 'GET_SETTINGS'
+  | 'UPDATE_SETTINGS'
+  // AI cost
+  | 'GET_AI_COST'
+  // Deferred (Tasks 4-8)
   | 'MATCH_FIELDS'
   | 'FILL_FIELD'
   | 'FILL_ALL'
   | 'LEARN_FIELD'
   | 'GENERATE_ESSAY'
-  | 'GET_SETTINGS'
-  | 'UPDATE_SETTINGS'
-  | 'SYNC_NOW'
-  | 'PARSE_RESUME';
+  | 'PARSE_RESUME'
+  | 'SYNC_NOW';
 
 export interface Message<T = any> {
   type: MessageType;
