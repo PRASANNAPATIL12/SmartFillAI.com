@@ -57,13 +57,21 @@ const FRAME_ID = isTopFrame
   ? '__top__'
   : `${location.origin}${location.pathname || '/'}`;
 
-interface FrameReport { matched: number; total: number; }
+interface FrameReport { matched: number; total: number; unfilled: number; }
 const frameReports = new Map<string, FrameReport>(); // only used in top frame
-let myCounts: FrameReport = { matched: 0, total: 0 };
+let myCounts: FrameReport = { matched: 0, total: 0, unfilled: 0 };
 
 // Pending fill aggregation (top frame only)
 let pendingFilled = 0;
 let pendingFillTimer: ReturnType<typeof setTimeout> | undefined;
+
+// Anti-flicker memoization + cooldown (top frame only)
+// `lastBannerSig` is the signature of the most recently rendered banner —
+// if a refresh would draw the same banner, we skip the DOM thrash. The
+// cooldown blocks ready/empty banners from clobbering the success banner
+// during its auto-dismiss window.
+let lastBannerSig = '';
+let bannerCooldownUntil = 0;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -179,18 +187,26 @@ async function scanFields(): Promise<void> {
 // single visible banner and coordinates fill across all frames.
 
 function refreshBanner(): void {
-  // Count fields and matches in THIS frame
+  // Count fields and matches in THIS frame.
+  // `unfilled` = matched AND not yet filled by us (dataset.dittoFilled !== 'true').
+  // The banner's CTA count is driven by `unfilled` so it disappears the
+  // instant every match has been filled, instead of re-asserting itself
+  // every time the MutationObserver ticks.
   let totalDetected = 0;
   let matched = 0;
-  for (const [, state] of matchMap) {
+  let unfilled = 0;
+  for (const [el, state] of matchMap) {
     if (state.result.status === 'SKIP') continue;
     totalDetected++;
-    if (state.result.status === 'MATCHED' && state.entry) matched++;
+    if (state.result.status === 'MATCHED' && state.entry) {
+      matched++;
+      if (el.dataset.dittoFilled !== 'true') unfilled++;
+    }
   }
-  console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
+  console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'unfilled', unfilled, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
 
   if (isTopFrame) {
-    myCounts = { matched, total: totalDetected };
+    myCounts = { matched, total: totalDetected, unfilled };
     renderAggregatedBanner();
   } else {
     // Bubble up so the top frame can aggregate counts from all iframes
@@ -200,6 +216,7 @@ function refreshBanner(): void {
         frameId: FRAME_ID,
         matched,
         totalDetected,
+        unfilled,
       }, '*');
     } catch {
       // window.top inaccessible in sandboxed frames — silently ignore
@@ -210,26 +227,52 @@ function refreshBanner(): void {
 function renderAggregatedBanner(): void {
   if (!isTopFrame) return;
   if (bannerDismissed) return;
+  // While the success banner is up, don't let ready/empty banners overwrite it.
+  if (Date.now() < bannerCooldownUntil) return;
 
   let totalMatched  = myCounts.matched;
   let totalDetected = myCounts.total;
+  let totalUnfilled = myCounts.unfilled;
   for (const report of frameReports.values()) {
     totalMatched  += report.matched;
     totalDetected += report.total;
+    totalUnfilled += report.unfilled;
   }
-  console.log('[SmartFillAI] aggregated → matched', totalMatched, 'total', totalDetected, 'frames reporting', frameReports.size);
+  console.log('[SmartFillAI] aggregated → matched', totalMatched, 'unfilled', totalUnfilled, 'total', totalDetected, 'frames reporting', frameReports.size);
 
-  // Show only when at least 2 fields are detected across all frames
+  // Decide the next banner state up-front, then bail out if it's identical
+  // to what's already on screen — that's how we kill the post-fill flicker.
+  let nextSig: string;
+  let kind: 'hide' | 'ready' | 'empty';
+
   if (totalDetected < 2) {
+    nextSig = 'hide:few-fields';
+    kind = 'hide';
+  } else if (totalMatched === 0) {
+    nextSig = `empty:${totalDetected}`;
+    kind = 'empty';
+  } else if (totalUnfilled === 0) {
+    // Everything matchable is already filled — nothing to offer
+    nextSig = 'hide:all-filled';
+    kind = 'hide';
+  } else {
+    nextSig = `ready:${totalUnfilled}:${totalDetected}`;
+    kind = 'ready';
+  }
+
+  if (nextSig === lastBannerSig) return; // no-op: avoids animation re-play
+
+  lastBannerSig = nextSig;
+
+  if (kind === 'hide') {
     if (bannerVisible) { hideBanner(); bannerVisible = false; }
     return;
   }
 
   bannerVisible = true;
-
-  if (totalMatched > 0) {
+  if (kind === 'ready') {
     showReadyBanner({
-      matched: totalMatched,
+      matched: totalUnfilled,
       total:   totalDetected,
       onFill:  triggerBannerFill,
       onClose: dismissBanner,
@@ -246,12 +289,15 @@ function renderAggregatedBanner(): void {
 function dismissBanner(): void {
   bannerDismissed = true;
   bannerVisible   = false;
+  lastBannerSig   = '';
   hideBanner();
 }
 
 function triggerBannerFill(): void {
   showFillingBanner();
   pendingFilled = 0;
+  // Block any re-render while the fill animation runs through to "Filled N fields"
+  bannerCooldownUntil = Date.now() + 5000;
   // Top frame fills its own first, then broadcasts to iframes
   requestAnimationFrame(() => {
     fillAll().then((local) => {
@@ -261,10 +307,17 @@ function triggerBannerFill(): void {
       // Comboboxes can take ~500ms each; allow more time for iframes
       pendingFillTimer = setTimeout(() => {
         showSuccessBanner(pendingFilled);
+        // Success banner auto-dismisses in 2500ms — keep the cooldown alive
+        // for that whole window so the ready banner can't overwrite it.
+        bannerCooldownUntil = Date.now() + 2800;
+        // Force next render after cooldown to re-evaluate from scratch
+        lastBannerSig = '';
         bannerVisible = false;
       }, 1200);
     }).catch(() => {
       showSuccessBanner(0);
+      bannerCooldownUntil = Date.now() + 2800;
+      lastBannerSig = '';
       bannerVisible = false;
     });
   });
@@ -291,8 +344,9 @@ window.addEventListener('message', (e) => {
   if (msg.type === 'sfa:frame-report' && isTopFrame) {
     const frameId = String(msg.frameId);
     frameReports.set(frameId, {
-      matched: Number(msg.matched) || 0,
-      total:   Number(msg.totalDetected) || 0,
+      matched:  Number(msg.matched) || 0,
+      total:    Number(msg.totalDetected) || 0,
+      unfilled: Number(msg.unfilled) || 0,
     });
     renderAggregatedBanner();
     return;
