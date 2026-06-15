@@ -1,3 +1,10 @@
+console.log(
+  '[SmartFillAI] content script loaded on',
+  location.href,
+  '| isTopFrame:', window.top === window,
+  '| parentOrigin:', (window.top === window) ? '(top)' : (() => { try { return document.referrer; } catch { return 'cross-origin'; } })()
+);
+
 import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature, UserSettings } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
@@ -37,9 +44,26 @@ let bannerDismissed = false;
 // Avoid flicker if scan re-runs many times — only show once and update the count.
 let bannerVisible = false;
 
+// ── Frame coordination ───────────────────────────────────────────────────────
+// Many forms (Greenhouse, Workday, Lever) live inside a cross-origin iframe.
+// Each frame runs its own content script. We need ONE banner — rendered in
+// the top frame — that aggregates counts from every frame. The top frame
+// also coordinates the Fill action by broadcasting to every iframe.
+const isTopFrame = window.top === window;
+const FRAME_ID = isTopFrame ? '__top__' : Math.random().toString(36).slice(2);
+
+interface FrameReport { matched: number; total: number; }
+const frameReports = new Map<string, FrameReport>(); // only used in top frame
+let myCounts: FrameReport = { matched: 0, total: 0 };
+
+// Pending fill aggregation (top frame only)
+let pendingFilled = 0;
+let pendingFillTimer: ReturnType<typeof setTimeout> | undefined;
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
+  console.log('[SmartFillAI] init() started');
   injectStyles();
 
   // Fetch profile and settings in parallel
@@ -47,6 +71,8 @@ async function init(): Promise<void> {
     sendToBackground<ProfileEntry[]>('GET_PROFILE'),
     sendToBackground<UserSettings>('GET_SETTINGS'),
   ]);
+
+  console.log('[SmartFillAI] profile entries loaded:', fetchedProfile.status === 'fulfilled' ? fetchedProfile.value.length : 'FAILED');
 
   profile   = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
   autoSave  = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave : true;
@@ -92,6 +118,7 @@ async function scanFields(): Promise<void> {
   }
 
   const fields = extractAllFields(document);
+  console.log('[SmartFillAI] scanFields detected', fields.length, 'fields, profile has', profile.length, 'entries');
   const newCacheEntries: Array<{ fingerprint: string; profileEntryId: string; confidence: number }> = [];
 
   for (const sig of fields) {
@@ -134,13 +161,13 @@ async function scanFields(): Promise<void> {
   refreshBanner();
 }
 
-// ── Proactive banner ──────────────────────────────────────────────────────────
+// ── Proactive banner (frame-aware) ────────────────────────────────────────────
 // "We come first to help" — the moment we see a fillable form, announce it.
+// In iframes we report counts up to the top frame; the top frame renders the
+// single visible banner and coordinates fill across all frames.
 
 function refreshBanner(): void {
-  if (bannerDismissed) return;
-
-  // Count fields and matches across the page
+  // Count fields and matches in THIS frame
   let totalDetected = 0;
   let matched = 0;
   for (const [, state] of matchMap) {
@@ -148,9 +175,39 @@ function refreshBanner(): void {
     totalDetected++;
     if (state.result.status === 'MATCHED' && state.entry) matched++;
   }
+  console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
 
-  // Show only when at least 2 fields are detected (avoids triggering on
-  // single search boxes or login forms with one email field).
+  if (isTopFrame) {
+    myCounts = { matched, total: totalDetected };
+    renderAggregatedBanner();
+  } else {
+    // Bubble up so the top frame can aggregate counts from all iframes
+    try {
+      window.top?.postMessage({
+        type: 'sfa:frame-report',
+        frameId: FRAME_ID,
+        matched,
+        totalDetected,
+      }, '*');
+    } catch {
+      // window.top inaccessible in sandboxed frames — silently ignore
+    }
+  }
+}
+
+function renderAggregatedBanner(): void {
+  if (!isTopFrame) return;
+  if (bannerDismissed) return;
+
+  let totalMatched  = myCounts.matched;
+  let totalDetected = myCounts.total;
+  for (const report of frameReports.values()) {
+    totalMatched  += report.matched;
+    totalDetected += report.total;
+  }
+  console.log('[SmartFillAI] aggregated → matched', totalMatched, 'total', totalDetected, 'frames reporting', frameReports.size);
+
+  // Show only when at least 2 fields are detected across all frames
   if (totalDetected < 2) {
     if (bannerVisible) { hideBanner(); bannerVisible = false; }
     return;
@@ -158,22 +215,18 @@ function refreshBanner(): void {
 
   bannerVisible = true;
 
-  if (matched > 0) {
+  if (totalMatched > 0) {
     showReadyBanner({
-      matched,
-      total: totalDetected,
+      matched: totalMatched,
+      total:   totalDetected,
       onFill:  triggerBannerFill,
       onClose: dismissBanner,
     });
   } else {
     showEmptyBanner({
       total: totalDetected,
-      onOpenPopup: () => {
-        // Best we can do from a content script — focus the extension page.
-        // The user must click the toolbar icon to open the popup itself.
-        sendToBackground('PING').catch(() => {});
-      },
-      onClose: dismissBanner,
+      onOpenPopup: () => { sendToBackground('PING').catch(() => {}); },
+      onClose:     dismissBanner,
     });
   }
 }
@@ -186,13 +239,73 @@ function dismissBanner(): void {
 
 function triggerBannerFill(): void {
   showFillingBanner();
-  // Defer one frame so the "Filling…" label paints before sync work
+  pendingFilled = 0;
+  // Top frame fills its own first
   requestAnimationFrame(() => {
-    const { filled } = fillAll();
-    showSuccessBanner(filled);
-    bannerVisible = false; // success banner auto-dismisses
+    const local = fillAll();
+    pendingFilled += local.filled;
+
+    // Broadcast to every iframe at any depth via top-down recursion
+    broadcastToAllIframes({ type: 'sfa:fill-request' });
+
+    // Wait briefly for iframes to report back, then show success
+    clearTimeout(pendingFillTimer);
+    pendingFillTimer = setTimeout(() => {
+      showSuccessBanner(pendingFilled);
+      bannerVisible = false;
+    }, 600);
   });
 }
+
+function broadcastToAllIframes(message: unknown, root: Document = document): void {
+  root.querySelectorAll('iframe').forEach((iframe) => {
+    try {
+      iframe.contentWindow?.postMessage(message, '*');
+    } catch {
+      // cross-origin: postMessage still works even when contentWindow is restricted
+    }
+  });
+}
+
+// ── Cross-frame message router ────────────────────────────────────────────────
+window.addEventListener('message', (e) => {
+  const data = e.data;
+  if (!data || typeof data !== 'object' || typeof (data as { type?: unknown }).type !== 'string') return;
+  const msg = data as { type: string; [k: string]: unknown };
+  if (!msg.type.startsWith('sfa:')) return;
+
+  // Top frame collects scan reports from iframes
+  if (msg.type === 'sfa:frame-report' && isTopFrame) {
+    const frameId = String(msg.frameId);
+    frameReports.set(frameId, {
+      matched: Number(msg.matched) || 0,
+      total:   Number(msg.totalDetected) || 0,
+    });
+    renderAggregatedBanner();
+    return;
+  }
+
+  // Any frame: top frame asked us to fill
+  if (msg.type === 'sfa:fill-request') {
+    const result = fillAll();
+    try {
+      window.top?.postMessage({
+        type: 'sfa:fill-result',
+        frameId: FRAME_ID,
+        filled: result.filled,
+      }, '*');
+    } catch { /* ignore */ }
+    // Also relay the request to any nested iframes
+    broadcastToAllIframes(msg);
+    return;
+  }
+
+  // Top frame aggregates fill results from iframes
+  if (msg.type === 'sfa:fill-result' && isTopFrame) {
+    pendingFilled += Number(msg.filled) || 0;
+    return;
+  }
+});
 
 // ── Step 5: async embedding pass for UNKNOWN fields ──────────────────────────
 
@@ -571,9 +684,51 @@ function injectStyles(): void {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FILL_ALL') {
-    const result = fillAll();
-    sendResponse({ success: true, data: result });
-    return false;
+    // Fill THIS frame first
+    const local = fillAll();
+    if (!isTopFrame) {
+      // Sub-frame: just fill itself and return — top frame coordinates the rest
+      sendResponse({ success: true, data: local });
+      return false;
+    }
+    // Top frame: also broadcast to all iframes and aggregate
+    let aggregateFilled  = local.filled;
+    let aggregateSkipped = local.skipped;
+    let responsesReceived = 0;
+    let totalFramesAsked  = 0;
+    let timeoutFired = false;
+
+    const onFrameResult = (e: MessageEvent): void => {
+      const d = e.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type !== 'sfa:fill-result') return;
+      aggregateFilled += Number(d.filled) || 0;
+      responsesReceived++;
+      if (!timeoutFired && responsesReceived >= totalFramesAsked) {
+        finalize();
+      }
+    };
+    window.addEventListener('message', onFrameResult);
+
+    const finalize = (): void => {
+      timeoutFired = true;
+      window.removeEventListener('message', onFrameResult);
+      sendResponse({ success: true, data: { filled: aggregateFilled, skipped: aggregateSkipped } });
+    };
+
+    document.querySelectorAll('iframe').forEach((iframe) => {
+      try {
+        iframe.contentWindow?.postMessage({ type: 'sfa:fill-request' }, '*');
+        totalFramesAsked++;
+      } catch { /* ignore */ }
+    });
+
+    if (totalFramesAsked === 0) {
+      finalize();
+    } else {
+      setTimeout(() => { if (!timeoutFired) finalize(); }, 800);
+    }
+    return true; // keep channel open for async response
   }
 
   if (message.type === 'FILL_FIELD') {

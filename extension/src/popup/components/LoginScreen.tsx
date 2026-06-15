@@ -31,7 +31,7 @@ export default function LoginScreen({ onSuccess, onSkip }: Props): React.ReactEl
   return (
     <div className="p-4 space-y-4">
       <div>
-        <h1 className="text-base font-semibold text-slate-800">Sign in to Ditto</h1>
+        <h1 className="text-base font-semibold text-slate-800">Sign in to SmartFillAI</h1>
         <p className="text-xs text-slate-500 mt-0.5">
           Sync your profile across devices. Your data is encrypted end-to-end.
         </p>
