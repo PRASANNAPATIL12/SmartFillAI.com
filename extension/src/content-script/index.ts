@@ -21,6 +21,7 @@ import {
   hideBanner,
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
+import { isCombobox, isComboboxFilled, getComboboxDisplayValue } from './combobox';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -229,12 +230,14 @@ function refreshBanner(): void {
     totalDetected++;
     if (state.result.status === 'MATCHED' && state.entry) {
       matched++;
-      // A field is "unfilled" when it has no value. We check the value
-      // directly (not the dataset marker) because React/Vue SPAs replace
-      // DOM nodes on re-render, blowing away any dataset we set. The
-      // value, in contrast, is restored from the framework's state.
-      const v = (el as HTMLInputElement).value ?? '';
-      if (v.trim() === '') unfilled++;
+      // STEP 6.4 — Comboboxes (react-select etc.) often clear input.value
+      // after option click; the chosen label lives in a sibling display.
+      // isComboboxFilled() checks the wrapper data flag + display element.
+      // For plain inputs, fall back to checking input.value directly.
+      const filled = isCombobox(el)
+        ? isComboboxFilled(el)
+        : ((el as HTMLInputElement).value ?? '').trim() !== '';
+      if (!filled) unfilled++;
     }
   }
   console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'unfilled', unfilled, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
@@ -679,20 +682,20 @@ function tryLearnField(el: HTMLElement): void {
   if (!el.isConnected) return;
   if (el.dataset.dittoFilled === 'true') return; // we just filled it
 
-  // Skip if user is still actively typing — but for ARIA comboboxes focus
-  // often stays on the input AFTER the user has committed an option, so
-  // for those we must NOT skip. Detect combobox by role/aria attributes.
-  if (document.activeElement === el) {
-    const isComboLike = el.getAttribute('role') === 'combobox'
-                    ||  el.getAttribute('aria-autocomplete') === 'list'
-                    ||  el.getAttribute('aria-autocomplete') === 'both';
-    if (!isComboLike) return;
-  }
+  // STEP 6.5 — Use the full isCombobox() detection from combobox.ts so we
+  // don't skip combobox-like elements when focus stays on them after the
+  // user picks an option (the most common pattern in react-select / Greenhouse).
+  const comboLike = isCombobox(el);
+  if (document.activeElement === el && !comboLike) return;
 
   const state = matchMap.get(el);
   if (!state) return;
 
-  const rawValue = (el as HTMLInputElement).value ?? '';
+  // STEP 6.6 — For comboboxes, the chosen value may live in a sibling
+  // display element instead of input.value. Read whichever is non-empty.
+  const rawValue = comboLike
+    ? getComboboxDisplayValue(el)
+    : ((el as HTMLInputElement).value ?? '');
   const value    = rawValue.trim();
   if (!value) return;
 

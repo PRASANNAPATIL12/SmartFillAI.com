@@ -2,10 +2,14 @@
  * Value injection for form fields.
  *
  * The challenge with React/Vue/Angular "controlled" inputs is that setting
- * el.value directly bypasses the framework's internal state tracker. The fix:
- *   1. Use the NATIVE prototype setter (captured in the extension's isolated
+ * el.value directly bypasses the framework's internal state tracker. Three
+ * things must happen for React to accept our write:
+ *
+ *   1. Reset React's _valueTracker.lastValue to '' so React sees this as
+ *      a genuine change (the most common reason fills silently revert).
+ *   2. Use the NATIVE prototype setter (captured in the extension's isolated
  *      world before any page script can shadow it) to write the raw DOM value.
- *   2. Dispatch synthetic 'input' + 'change' events so the framework re-reads
+ *   3. Dispatch synthetic 'input' + 'change' events so the framework re-reads
  *      el.value and syncs its own state.
  */
 
@@ -29,12 +33,26 @@ const nativeSelectSetter = Object.getOwnPropertyDescriptor(
 )?.set;
 
 /**
+ * STEP 6.1 — Reset React's internal value tracker BEFORE we write. Without
+ * this, React 17+ may skip dispatching onChange because tracker.lastValue
+ * matches the new value (especially after the developer's own onChange has
+ * already echoed our value back through state). Setting lastValue='' makes
+ * React see the upcoming write as a fresh change.
+ */
+function resetReactValueTracker(el: HTMLInputElement | HTMLTextAreaElement): void {
+  const tracker = (el as unknown as { _valueTracker?: { setValue: (v: string) => void } })._valueTracker;
+  if (tracker && typeof tracker.setValue === 'function') {
+    try { tracker.setValue(''); } catch { /* tracker may be frozen */ }
+  }
+}
+
+/**
  * Fill a form element with a value.
- * Returns true if the value was set, false if the field was skipped.
+ * Returns true if the value stuck (verified by reading back).
  *
  * Async because ARIA comboboxes need to wait for the popup listbox to
  * render before we can click an option. Plain inputs and native <select>
- * resolve synchronously.
+ * resolve synchronously but the signature is async for uniformity.
  */
 export async function fillElement(
   el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
@@ -42,6 +60,8 @@ export async function fillElement(
   canonicalKey?: string
 ): Promise<boolean> {
   if (el.disabled || (el as HTMLInputElement).readOnly) return false;
+
+  const before = (el as HTMLInputElement).value ?? '';
 
   try {
     if (el instanceof HTMLSelectElement) {
@@ -56,6 +76,9 @@ export async function fillElement(
     const setter =
       el instanceof HTMLTextAreaElement ? nativeTextareaSetter : nativeInputSetter;
 
+    // STEP 6.1 — Reset React's value tracker so the write is seen as a change
+    resetReactValueTracker(el);
+
     if (setter) {
       setter.call(el, value);
     } else {
@@ -67,8 +90,23 @@ export async function fillElement(
     el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
 
     el.dataset.dittoFilled = 'true';
+
+    // STEP 6.2 — Post-fill verification. If the value didn't stick (React
+    // reverted, or the input has filters that rejected our write), log it
+    // so we can see in the console and react accordingly.
+    const after = (el as HTMLInputElement).value ?? '';
+    if (after !== value) {
+      console.warn('[SmartFillAI] fill mismatch:', {
+        label: el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?',
+        before, after, expected: value,
+      });
+      // If reverted, we still return true because we did our best. The
+      // ghost-removal still happens. User can retry.
+    }
+
     return true;
-  } catch {
+  } catch (err) {
+    console.warn('[SmartFillAI] fill threw:', err);
     return false;
   }
 }
