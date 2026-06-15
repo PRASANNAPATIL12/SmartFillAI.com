@@ -233,16 +233,37 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const inferred = inferCanonicalKey(sig);
     if (inferred === '') throw new Error('Sensitive field — will not learn this value');
 
+    // STEP 7.3 — Defensive value-length cap. A textarea that snuck through
+    // the matcher's essay-detector shouldn't be saved as a profile field;
+    // anything > 500 chars is almost certainly the wrong target.
+    const trimmed = value.length > 500 ? value.slice(0, 500) : value;
+
     const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
     const category     = inferCategory(canonicalKey);
     const displayLabel = inferDisplayLabel(sig);
     const userId       = (await getCurrentUserId()) ?? '';
 
+    // STEP 7.1 — Duplicate prevention. If the profile already has an entry
+    // with this canonical_key, UPDATE its value instead of creating a second
+    // entry. This is the proper "change of mind" handling — user picks
+    // "India" then later "United States" for the same Country field should
+    // result in ONE entry, not two.
+    const existing = (await getAllEntries()).find(e => e.canonical_key === canonicalKey);
+    if (existing) {
+      if (existing.value === trimmed) return existing; // no-op
+      const updated = await updateEntry(existing.id, { value: trimmed });
+      if (updated) {
+        embedEntry(updated).catch(() => {});
+        return updated;
+      }
+      // Fall through to create only if update somehow failed
+    }
+
     const data: NewEntryData = {
       canonical_key: canonicalKey,
       display_label: displayLabel,
       aliases:       [],
-      value,
+      value:         trimmed,
       category,
       source:        'learned',
       sensitive:     false,

@@ -1,5 +1,10 @@
-console.log(
-  '[SmartFillAI] content script loaded on',
+// STEP 7.6 — Debug logging gate. Set window.__SFA_DEBUG = true in DevTools
+// to opt into verbose logging. Default off so users don't see the noise.
+const SFA_DEBUG = (window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true;
+const sfaLog = (...args: unknown[]): void => { if (SFA_DEBUG) console.log('[SmartFillAI]', ...args); };
+
+sfaLog(
+  'content script loaded on',
   location.href,
   '| isTopFrame:', window.top === window,
   '| parentOrigin:', (window.top === window) ? '(top)' : (() => { try { return document.referrer; } catch { return 'cross-origin'; } })()
@@ -95,7 +100,7 @@ let learnSweepTimer: ReturnType<typeof setInterval> | undefined;
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
-  console.log('[SmartFillAI] init() started');
+  sfaLog('init() started');
   injectStyles();
 
   // Fetch profile and settings in parallel
@@ -104,7 +109,7 @@ async function init(): Promise<void> {
     sendToBackground<UserSettings>('GET_SETTINGS'),
   ]);
 
-  console.log('[SmartFillAI] profile entries loaded:', fetchedProfile.status === 'fulfilled' ? fetchedProfile.value.length : 'FAILED');
+  sfaLog('profile entries loaded:', fetchedProfile.status === 'fulfilled' ? fetchedProfile.value.length : 'FAILED');
 
   profile   = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
   autoSave  = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave : true;
@@ -125,13 +130,18 @@ async function init(): Promise<void> {
   window.addEventListener('scroll', onReposition, { passive: true });
   window.addEventListener('resize', onReposition);
 
-  // Part 2 — Reliable learning. Three safety nets that catch dropdown
+  // Part 2/3 — Reliable learning. Four safety nets that catch dropdown
   // selections regardless of how the framework commits them:
-  //   1. focusout (catches user moving focus away)
-  //   2. submit (last chance before page navigation)
-  //   3. 2.5s periodic sweep (catches selections where focus never leaves)
-  document.addEventListener('focusout', handleGlobalFocusOut, true);
-  document.addEventListener('submit',   handleGlobalSubmit,   true);
+  //   1. focusout — catches user moving focus away
+  //   2. submit — fires before a form posts; chrome.runtime.sendMessage to
+  //              the service worker survives the subsequent navigation
+  //   3. pagehide + beforeunload — final escape hatch for SPA navigations
+  //      that don't fire a submit event
+  //   4. 2.5s periodic sweep — catches selections where focus never leaves
+  document.addEventListener('focusout',     handleGlobalFocusOut, true);
+  document.addEventListener('submit',       handleGlobalSubmit,   true);
+  window.addEventListener('beforeunload',   handleGlobalSubmit);
+  window.addEventListener('pagehide',       handleGlobalSubmit);
   if (learnSweepTimer === undefined) {
     learnSweepTimer = setInterval(runLearnSweep, LEARN_SWEEP_INTERVAL_MS);
   }
@@ -168,7 +178,7 @@ async function scanFields(): Promise<void> {
   }
 
   const fields = extractAllFields(document);
-  console.log('[SmartFillAI] scanFields detected', fields.length, 'fields, profile has', profile.length, 'entries');
+  sfaLog('scanFields detected', fields.length, 'fields, profile has', profile.length, 'entries');
   const newCacheEntries: Array<{ fingerprint: string; profileEntryId: string; confidence: number }> = [];
 
   for (const sig of fields) {
@@ -240,7 +250,7 @@ function refreshBanner(): void {
       if (!filled) unfilled++;
     }
   }
-  console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'unfilled', unfilled, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
+  sfaLog('refreshBanner: detected', totalDetected, 'matched', matched, 'unfilled', unfilled, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
 
   if (isTopFrame) {
     myCounts = { matched, total: totalDetected, unfilled };
@@ -288,7 +298,7 @@ function renderAggregatedBanner(): void {
     totalDetected += report.total;
     totalUnfilled += report.unfilled;
   }
-  console.log('[SmartFillAI] aggregated → matched', totalMatched, 'unfilled', totalUnfilled, 'total', totalDetected, 'frames reporting', frameReports.size);
+  sfaLog('aggregated → matched', totalMatched, 'unfilled', totalUnfilled, 'total', totalDetected, 'frames reporting', frameReports.size);
 
   // Decide the next banner state up-front, then bail out if it's identical
   // to what's already on screen — that's how we kill the post-fill flicker.
@@ -704,7 +714,7 @@ function tryLearnField(el: HTMLElement): void {
     if (el.dataset.dittoLastLearnedValue === value) return; // already tried
     el.dataset.dittoLastLearnedValue = value;
     if (autoSave) {
-      console.log('[SmartFillAI] learn:', state.sig.label || state.sig.name || state.sig.id, '=', value);
+      sfaLog('learn:', state.sig.label || state.sig.name || state.sig.id, '=', value);
       doLearnField(el, state.sig, value).catch(() => {});
     } else {
       const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
@@ -723,7 +733,7 @@ function tryLearnField(el: HTMLElement): void {
     if (el.dataset.dittoLastLearnedValue === value) return;
     el.dataset.dittoLastLearnedValue = value;
     if (autoSave) {
-      console.log('[SmartFillAI] update:', state.entry.display_label, '→', value);
+      sfaLog('update:', state.entry.display_label, '→', value);
       doUpdateEntry(state.entry.id, value).catch(() => {});
       el.dataset.dittoPreFocusValue = value;
     } else {
@@ -856,8 +866,24 @@ async function doUpdateEntry(id: string, value: string): Promise<void> {
 }
 
 function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: ProfileEntry): void {
-  // Add to local profile so future scans find it
-  profile.push(newEntry);
+  // STEP 7.2 — The background's LEARN_FIELD now may return an UPDATED
+  // existing entry (same id, new value) instead of a fresh one. Mirror that
+  // in our local profile array: replace if id matches, else push.
+  const existingIdx = profile.findIndex(p => p.id === newEntry.id);
+  if (existingIdx >= 0) {
+    profile[existingIdx] = newEntry;
+  } else {
+    profile.push(newEntry);
+  }
+
+  // Also propagate the new value to every matchMap entry that points at
+  // this profile entry (a single canonical key can match multiple form
+  // fields — e.g. First Name and Preferred First Name both = first_name).
+  for (const [otherEl, state] of matchMap) {
+    if (state.entry?.id === newEntry.id) {
+      matchMap.set(otherEl, { ...state, entry: newEntry });
+    }
+  }
 
   const result: MatchResult = {
     status:          'MATCHED',
