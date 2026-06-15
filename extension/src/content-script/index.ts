@@ -50,7 +50,12 @@ let bannerVisible = false;
 // the top frame — that aggregates counts from every frame. The top frame
 // also coordinates the Fill action by broadcasting to every iframe.
 const isTopFrame = window.top === window;
-const FRAME_ID = isTopFrame ? '__top__' : Math.random().toString(36).slice(2);
+// Stable per-frame identifier. Origin + pathname is the same across content-script
+// re-injections (about:blank → real URL transitions, SPA navigations within the
+// iframe), so the top frame's report map overwrites rather than accumulating.
+const FRAME_ID = isTopFrame
+  ? '__top__'
+  : `${location.origin}${location.pathname || '/'}`;
 
 interface FrameReport { matched: number; total: number; }
 const frameReports = new Map<string, FrameReport>(); // only used in top frame
@@ -102,6 +107,13 @@ async function init(): Promise<void> {
 
 async function scanFields(): Promise<void> {
   if (!profileLoaded) return;
+
+  // Prune dead element refs before rescanning. The SPA can replace form
+  // nodes between MutationObserver ticks; stale entries would otherwise
+  // accumulate and inflate the banner's "Fill N of M" counters.
+  for (const el of Array.from(matchMap.keys())) {
+    if (!el.isConnected) matchMap.delete(el);
+  }
 
   const domain = window.location.hostname;
 
