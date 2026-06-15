@@ -9,6 +9,8 @@
  *      el.value and syncs its own state.
  */
 
+import { isCombobox, fillCombobox } from './combobox';
+
 // Capture native setters from the extension's isolated world.
 // Page scripts cannot touch these because isolated worlds have separate prototypes.
 const nativeInputSetter = Object.getOwnPropertyDescriptor(
@@ -29,16 +31,26 @@ const nativeSelectSetter = Object.getOwnPropertyDescriptor(
 /**
  * Fill a form element with a value.
  * Returns true if the value was set, false if the field was skipped.
+ *
+ * Async because ARIA comboboxes need to wait for the popup listbox to
+ * render before we can click an option. Plain inputs and native <select>
+ * resolve synchronously.
  */
-export function fillElement(
+export async function fillElement(
   el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-  value: string
-): boolean {
+  value: string,
+  canonicalKey?: string
+): Promise<boolean> {
   if (el.disabled || (el as HTMLInputElement).readOnly) return false;
 
   try {
     if (el instanceof HTMLSelectElement) {
       return fillSelect(el, value);
+    }
+
+    // ARIA combobox / custom dropdown — needs the type-then-click recipe
+    if (isCombobox(el)) {
+      return await fillCombobox(el as HTMLInputElement | HTMLTextAreaElement, value, canonicalKey);
     }
 
     const setter =

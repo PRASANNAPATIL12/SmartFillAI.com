@@ -252,20 +252,21 @@ function dismissBanner(): void {
 function triggerBannerFill(): void {
   showFillingBanner();
   pendingFilled = 0;
-  // Top frame fills its own first
+  // Top frame fills its own first, then broadcasts to iframes
   requestAnimationFrame(() => {
-    const local = fillAll();
-    pendingFilled += local.filled;
-
-    // Broadcast to every iframe at any depth via top-down recursion
-    broadcastToAllIframes({ type: 'sfa:fill-request' });
-
-    // Wait briefly for iframes to report back, then show success
-    clearTimeout(pendingFillTimer);
-    pendingFillTimer = setTimeout(() => {
-      showSuccessBanner(pendingFilled);
+    fillAll().then((local) => {
+      pendingFilled += local.filled;
+      broadcastToAllIframes({ type: 'sfa:fill-request' });
+      clearTimeout(pendingFillTimer);
+      // Comboboxes can take ~500ms each; allow more time for iframes
+      pendingFillTimer = setTimeout(() => {
+        showSuccessBanner(pendingFilled);
+        bannerVisible = false;
+      }, 1200);
+    }).catch(() => {
+      showSuccessBanner(0);
       bannerVisible = false;
-    }, 600);
+    });
   });
 }
 
@@ -299,14 +300,15 @@ window.addEventListener('message', (e) => {
 
   // Any frame: top frame asked us to fill
   if (msg.type === 'sfa:fill-request') {
-    const result = fillAll();
-    try {
-      window.top?.postMessage({
-        type: 'sfa:fill-result',
-        frameId: FRAME_ID,
-        filled: result.filled,
-      }, '*');
-    } catch { /* ignore */ }
+    fillAll().then((result) => {
+      try {
+        window.top?.postMessage({
+          type: 'sfa:fill-result',
+          frameId: FRAME_ID,
+          filled: result.filled,
+        }, '*');
+      } catch { /* ignore */ }
+    });
     // Also relay the request to any nested iframes
     broadcastToAllIframes(msg);
     return;
@@ -428,10 +430,13 @@ async function runStep6(): Promise<void> {
 
 // ── Fill operations ───────────────────────────────────────────────────────────
 
-function fillAll(): { filled: number; skipped: number } {
+async function fillAll(): Promise<{ filled: number; skipped: number }> {
   let filled = 0;
   let skipped = 0;
 
+  // Sequential fills are deliberate — comboboxes need the listbox to
+  // finish committing before we move on, and many sites tie focus
+  // transitions to their internal state machines.
   for (const [el, state] of matchMap) {
     if (state.result.status !== 'MATCHED' || !state.entry) {
       skipped++;
@@ -443,9 +448,10 @@ function fillAll(): { filled: number; skipped: number } {
       continue;
     }
 
-    const ok = fillElement(
+    const ok = await fillElement(
       el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-      state.entry.value
+      state.entry.value,
+      state.entry.canonical_key
     );
 
     if (ok) {
@@ -463,11 +469,12 @@ function fillAll(): { filled: number; skipped: number } {
 
 // ── Pill fill callback ────────────────────────────────────────────────────────
 
-function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): void {
+async function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): Promise<void> {
   if (!target.entry) return; // ESSAY pills have no entry
-  const ok = fillElement(
+  const ok = await fillElement(
     target.el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-    target.entry.value
+    target.entry.value,
+    target.entry.canonical_key
   );
   if (ok) {
     removeGhost(target.el);
@@ -696,19 +703,18 @@ function injectStyles(): void {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FILL_ALL') {
-    // Fill THIS frame first
-    const local = fillAll();
     if (!isTopFrame) {
-      // Sub-frame: just fill itself and return — top frame coordinates the rest
-      sendResponse({ success: true, data: local });
-      return false;
+      // Sub-frame: fill self, report back, done
+      fillAll().then((local) => sendResponse({ success: true, data: local }))
+               .catch(() => sendResponse({ success: true, data: { filled: 0, skipped: 0 } }));
+      return true;
     }
-    // Top frame: also broadcast to all iframes and aggregate
-    let aggregateFilled  = local.filled;
-    let aggregateSkipped = local.skipped;
+    // Top frame: fill self async, then broadcast to all iframes and aggregate
+    let aggregateFilled  = 0;
+    let aggregateSkipped = 0;
     let responsesReceived = 0;
     let totalFramesAsked  = 0;
-    let timeoutFired = false;
+    let finalized = false;
 
     const onFrameResult = (e: MessageEvent): void => {
       const d = e.data;
@@ -716,30 +722,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (d.type !== 'sfa:fill-result') return;
       aggregateFilled += Number(d.filled) || 0;
       responsesReceived++;
-      if (!timeoutFired && responsesReceived >= totalFramesAsked) {
-        finalize();
-      }
+      if (!finalized && responsesReceived >= totalFramesAsked) finalize();
     };
     window.addEventListener('message', onFrameResult);
 
     const finalize = (): void => {
-      timeoutFired = true;
+      if (finalized) return;
+      finalized = true;
       window.removeEventListener('message', onFrameResult);
       sendResponse({ success: true, data: { filled: aggregateFilled, skipped: aggregateSkipped } });
     };
 
-    document.querySelectorAll('iframe').forEach((iframe) => {
-      try {
-        iframe.contentWindow?.postMessage({ type: 'sfa:fill-request' }, '*');
-        totalFramesAsked++;
-      } catch { /* ignore */ }
-    });
+    fillAll().then((local) => {
+      aggregateFilled  = local.filled;
+      aggregateSkipped = local.skipped;
 
-    if (totalFramesAsked === 0) {
-      finalize();
-    } else {
-      setTimeout(() => { if (!timeoutFired) finalize(); }, 800);
-    }
+      document.querySelectorAll('iframe').forEach((iframe) => {
+        try {
+          iframe.contentWindow?.postMessage({ type: 'sfa:fill-request' }, '*');
+          totalFramesAsked++;
+        } catch { /* ignore */ }
+      });
+
+      if (totalFramesAsked === 0) finalize();
+      // Comboboxes take ~500ms; give iframes generous time
+      else setTimeout(() => { if (!finalized) finalize(); }, 1500);
+    }).catch(() => finalize());
+
     return true; // keep channel open for async response
   }
 
@@ -757,13 +766,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ success: false, error: 'No profile entry for field' });
       return false;
     }
-    const ok = fillElement(
+    fillElement(
       el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-      state.entry.value
-    );
-    if (ok) sendToBackground('RECORD_USE', { id: state.entry.id }).catch(() => {});
-    sendResponse({ success: ok });
-    return false;
+      state.entry.value,
+      state.entry.canonical_key,
+    ).then((ok) => {
+      if (ok) sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});
+      sendResponse({ success: ok });
+    }).catch(() => sendResponse({ success: false }));
+    return true;
   }
 
   return false;
