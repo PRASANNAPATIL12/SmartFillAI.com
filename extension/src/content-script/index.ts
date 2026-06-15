@@ -73,6 +73,14 @@ let pendingFillTimer: ReturnType<typeof setTimeout> | undefined;
 let lastBannerSig = '';
 let bannerCooldownUntil = 0;
 
+// STEP 1.5 — Anti-spam: each frame tracks its last reported counts and
+// skips redundant postMessage broadcasts. Without this, every 300ms-debounced
+// MutationObserver tick in non-form iframes would re-send {matched:0,total:0,
+// unfilled:0} to the top frame.
+let lastReportedMatched  = -1;
+let lastReportedTotal    = -1;
+let lastReportedUnfilled = -1;
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
@@ -214,6 +222,19 @@ function refreshBanner(): void {
     myCounts = { matched, total: totalDetected, unfilled };
     renderAggregatedBanner();
   } else {
+    // STEP 1.5 — skip the postMessage if our state hasn't changed since
+    // the last broadcast. Cuts non-form-iframe spam from ~3/sec to ~0.
+    if (
+      lastReportedMatched  === matched &&
+      lastReportedTotal    === totalDetected &&
+      lastReportedUnfilled === unfilled
+    ) {
+      return;
+    }
+    lastReportedMatched  = matched;
+    lastReportedTotal    = totalDetected;
+    lastReportedUnfilled = unfilled;
+
     // Bubble up so the top frame can aggregate counts from all iframes
     try {
       window.top?.postMessage({
@@ -301,24 +322,34 @@ function dismissBanner(): void {
 function triggerBannerFill(): void {
   showFillingBanner();
   pendingFilled = 0;
-  // Block any re-render while the fill animation runs through to "Filled N fields"
-  bannerCooldownUntil = Date.now() + 5000;
+  // STEP 1.3 — cooldown must outlast the full fill phase. A page with
+  // multiple comboboxes (Country, Degree, State) needs ~2.5s for fills to
+  // settle plus 2.8s of success-banner display = ~5.3s minimum.
+  bannerCooldownUntil = Date.now() + 6500;
+
   // Top frame fills its own first, then broadcasts to iframes
   requestAnimationFrame(() => {
     fillAll().then((local) => {
       pendingFilled += local.filled;
       broadcastToAllIframes({ type: 'sfa:fill-request' });
+      // STEP 1.1 — recompute the top frame's own counts immediately
+      refreshBanner();
+      // STEP 1.2 — followup scan to catch any framework value-reverts
+      setTimeout(() => { scanFields().catch(() => {}); }, 600);
+
       clearTimeout(pendingFillTimer);
-      // Comboboxes can take ~500ms each; allow more time for iframes
+      // STEP 1.3 — wait long enough for iframe combobox fills to finish.
+      // Each combobox takes up to ~560ms; 5 fields is ~2.8s; 3.5s is safe.
       pendingFillTimer = setTimeout(() => {
         showSuccessBanner(pendingFilled);
-        // Success banner auto-dismisses in 2500ms — keep the cooldown alive
-        // for that whole window so the ready banner can't overwrite it.
         bannerCooldownUntil = Date.now() + 2800;
-        // Force next render after cooldown to re-evaluate from scratch
         lastBannerSig = '';
         bannerVisible = false;
-      }, 1200);
+        // STEP 1.4 — after the success banner finishes its auto-dismiss,
+        // force a final aggregation pass so the now-correct unfilled=0
+        // reading takes effect and the banner stays gone.
+        setTimeout(() => { renderAggregatedBanner(); }, 2900);
+      }, 3500);
     }).catch(() => {
       showSuccessBanner(0);
       bannerCooldownUntil = Date.now() + 2800;
@@ -367,6 +398,15 @@ window.addEventListener('message', (e) => {
           filled: result.filled,
         }, '*');
       } catch { /* ignore */ }
+      // STEP 1.1 — recompute counts now that values are set so the next
+      // frame-report carries unfilled=0 (or close to it) up to the top
+      // frame. MutationObserver does NOT fire on .value property writes,
+      // so without this manual call the iframe never re-reports.
+      refreshBanner();
+      // STEP 1.2 — some frameworks (Greenhouse/React) revert programmatic
+      // value writes on re-render; do a second pass after the dust settles
+      // so we catch any reverts and either re-fill or re-report accurately.
+      setTimeout(() => { scanFields().catch(() => {}); }, 600);
     });
     // Also relay the request to any nested iframes
     broadcastToAllIframes(msg);
@@ -784,9 +824,13 @@ function injectStyles(): void {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FILL_ALL') {
     if (!isTopFrame) {
-      // Sub-frame: fill self, report back, done
-      fillAll().then((local) => sendResponse({ success: true, data: local }))
-               .catch(() => sendResponse({ success: true, data: { filled: 0, skipped: 0 } }));
+      // Sub-frame: fill self, report back, recompute counts so the next
+      // frame-report carries the new unfilled state up to the top frame.
+      fillAll().then((local) => {
+        sendResponse({ success: true, data: local });
+        refreshBanner();
+        setTimeout(() => { scanFields().catch(() => {}); }, 600);
+      }).catch(() => sendResponse({ success: true, data: { filled: 0, skipped: 0 } }));
       return true;
     }
     // Top frame: fill self async, then broadcast to all iframes and aggregate
@@ -810,8 +854,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (finalized) return;
       finalized = true;
       window.removeEventListener('message', onFrameResult);
+      // STEP 1.1 / 1.4 — recompute and aggregate once before responding
+      refreshBanner();
+      renderAggregatedBanner();
       sendResponse({ success: true, data: { filled: aggregateFilled, skipped: aggregateSkipped } });
     };
+
+    // Cooldown so the success banner can't be overwritten while popup fill is in flight
+    bannerCooldownUntil = Date.now() + 5500;
 
     fillAll().then((local) => {
       aggregateFilled  = local.filled;
@@ -825,8 +875,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
 
       if (totalFramesAsked === 0) finalize();
-      // Comboboxes take ~500ms; give iframes generous time
-      else setTimeout(() => { if (!finalized) finalize(); }, 1500);
+      // STEP 1.3 — comboboxes can take ~560ms each; wait long enough
+      else setTimeout(() => { if (!finalized) finalize(); }, 3500);
     }).catch(() => finalize());
 
     return true; // keep channel open for async response
