@@ -112,16 +112,16 @@ export default function SettingsScreen({ provider, onBack, onProviderChange }: P
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Autofill</p>
             <div className="space-y-0 rounded-xl border border-slate-100 overflow-hidden">
               <ToggleRow
-                label="Show field hints"
-                description="Highlight fillable fields with a subtle outline"
-                checked={settings.showGhostText}
-                onChange={() => toggleSetting('showGhostText')}
-              />
-              <ToggleRow
-                label="Auto-save learned values"
-                description="Remember values you manually type into forms"
+                label="Auto-save fields I fill"
+                description="Anything you type gets remembered — and updates if you change a saved value"
                 checked={settings.autoSave}
                 onChange={() => toggleSetting('autoSave')}
+              />
+              <ToggleRow
+                label="Show field hints"
+                description="Outline fillable fields and preview what we'll fill"
+                checked={settings.showGhostText}
+                onChange={() => toggleSetting('showGhostText')}
               />
               <ToggleRow
                 label="Block sensitive domains"

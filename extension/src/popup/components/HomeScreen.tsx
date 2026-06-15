@@ -42,8 +42,15 @@ export default function HomeScreen({
     try {
       const result = await sendToActiveTab<{ filled: number; skipped: number }>('FILL_ALL');
       setFillResult(result);
-      setFillState('done');
-      setTimeout(() => setFillState('idle'), 3000);
+      setFillState(result.filled === 0 ? 'error' : 'done');
+      if (result.filled === 0) {
+        setFillError(
+          entries.length === 0
+            ? 'No profile data yet — add some first.'
+            : 'No matching fields on this page.'
+        );
+      }
+      setTimeout(() => setFillState('idle'), 3500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setFillError(
@@ -54,7 +61,7 @@ export default function HomeScreen({
       setFillState('error');
       setTimeout(() => setFillState('idle'), 4000);
     }
-  }, []);
+  }, [entries.length]);
 
   const handleSyncNow = useCallback(async () => {
     setSyncing(true);
@@ -81,7 +88,7 @@ export default function HomeScreen({
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
         <div className="flex items-center gap-2">
-          <span className="text-base font-bold text-slate-800 tracking-tight">Ditto</span>
+          <span className="text-base font-bold text-slate-800 tracking-tight">SmartFillAI</span>
           <span className="text-xs bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">
             {providerLabel}
           </span>
@@ -147,7 +154,7 @@ export default function HomeScreen({
             <div className="bg-slate-50 rounded-xl p-3 text-center">
               <p className="text-sm text-slate-500">No profile entries yet.</p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Add your data and Ditto will fill it into forms automatically.
+                Add your data and SmartFillAI will fill it into forms automatically.
               </p>
               <button onClick={onGoProfile}
                 className="mt-2 text-xs text-sky-500 font-medium hover:underline">

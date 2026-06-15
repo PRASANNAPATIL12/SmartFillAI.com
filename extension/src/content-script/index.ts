@@ -6,6 +6,14 @@ import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel } from './overlay';
 import type { EssayTarget } from './overlay';
+import {
+  showReadyBanner,
+  showEmptyBanner,
+  showFillingBanner,
+  showSuccessBanner,
+  hideBanner,
+} from './overlay-banner';
+import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -22,6 +30,12 @@ let profile: ProfileEntry[] = [];
 let profileLoaded = false;
 let scanTimer: ReturnType<typeof setTimeout> | undefined;
 let autoSave = true; // default; overwritten after GET_SETTINGS resolves
+
+// ── Banner state ──────────────────────────────────────────────────────────────
+// Once the user dismisses the banner on this page load, don't re-show it.
+let bannerDismissed = false;
+// Avoid flicker if scan re-runs many times — only show once and update the count.
+let bannerVisible = false;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -41,6 +55,18 @@ async function init(): Promise<void> {
   initOverlay(handlePillFill);
   initLearnOverlay(handleLearnSave);
   initEssayOverlay(handleEssayOpen);
+
+  // When the user scrolls or resizes, ghost overlays drift away from inputs.
+  // Wipe them; the next scan will repaint them in the correct positions.
+  let repositionTimer: ReturnType<typeof setTimeout> | undefined;
+  const onReposition = (): void => {
+    clearTimeout(repositionTimer);
+    repositionAllGhosts();
+    repositionTimer = setTimeout(() => { scanFields().catch(() => {}); }, 200);
+  };
+  window.addEventListener('scroll', onReposition, { passive: true });
+  window.addEventListener('resize', onReposition);
+
   await scanFields();
   // Steps 5+6 run after deterministic steps — async, never blocks initial render
   runStep5().then(() => runStep6().catch(() => {})).catch(() => {});
@@ -103,6 +129,69 @@ async function scanFields(): Promise<void> {
   for (const entry of newCacheEntries) {
     sendToBackground('CACHE_FIELD_MATCH', entry).catch(() => {});
   }
+
+  // Refresh the proactive banner based on the new scan
+  refreshBanner();
+}
+
+// ── Proactive banner ──────────────────────────────────────────────────────────
+// "We come first to help" — the moment we see a fillable form, announce it.
+
+function refreshBanner(): void {
+  if (bannerDismissed) return;
+
+  // Count fields and matches across the page
+  let totalDetected = 0;
+  let matched = 0;
+  for (const [, state] of matchMap) {
+    if (state.result.status === 'SKIP') continue;
+    totalDetected++;
+    if (state.result.status === 'MATCHED' && state.entry) matched++;
+  }
+
+  // Show only when at least 2 fields are detected (avoids triggering on
+  // single search boxes or login forms with one email field).
+  if (totalDetected < 2) {
+    if (bannerVisible) { hideBanner(); bannerVisible = false; }
+    return;
+  }
+
+  bannerVisible = true;
+
+  if (matched > 0) {
+    showReadyBanner({
+      matched,
+      total: totalDetected,
+      onFill:  triggerBannerFill,
+      onClose: dismissBanner,
+    });
+  } else {
+    showEmptyBanner({
+      total: totalDetected,
+      onOpenPopup: () => {
+        // Best we can do from a content script — focus the extension page.
+        // The user must click the toolbar icon to open the popup itself.
+        sendToBackground('PING').catch(() => {});
+      },
+      onClose: dismissBanner,
+    });
+  }
+}
+
+function dismissBanner(): void {
+  bannerDismissed = true;
+  bannerVisible   = false;
+  hideBanner();
+}
+
+function triggerBannerFill(): void {
+  showFillingBanner();
+  // Defer one frame so the "Filling…" label paints before sync work
+  requestAnimationFrame(() => {
+    const { filled } = fillAll();
+    showSuccessBanner(filled);
+    bannerVisible = false; // success banner auto-dismisses
+  });
 }
 
 // ── Step 5: async embedding pass for UNKNOWN fields ──────────────────────────
@@ -236,6 +325,7 @@ function fillAll(): { filled: number; skipped: number } {
 
     if (ok) {
       filled++;
+      removeGhost(el);
       // Fire-and-forget — use count update is best-effort
       sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});
     } else {
@@ -255,6 +345,7 @@ function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): void
     target.entry.value
   );
   if (ok) {
+    removeGhost(target.el);
     sendToBackground('RECORD_USE', { id: target.entry.id }).catch(() => {});
   }
 }
@@ -279,6 +370,11 @@ function applyHint(
     el.dataset.dittoMatch = 'true';
     el.dataset.dittoKey = entry.canonical_key;
     attachPillListeners(el, entry, result);
+    // Ghost text preview — show value (masked for sensitive entries)
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      const preview = entry.sensitive ? '•••••' : entry.value;
+      showGhost(el, preview);
+    }
   } else if (result.status === 'ESSAY') {
     el.dataset.dittoMatch = 'essay';
     if (sig) attachEssayPillListeners(el, sig);
@@ -298,6 +394,29 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('focus',      show);
   el.addEventListener('mouseleave', hide);
   el.addEventListener('blur',       hide);
+
+  // Update-detection — capture the original profile value so we know if
+  // the user edits a pre-filled field to a different value.
+  el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
+  el.addEventListener('focus', () => {
+    el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
+  });
+  el.addEventListener('blur', () => {
+    const currentValue = (el as HTMLInputElement).value ?? '';
+    if (!currentValue) return;
+    if (entry.sensitive) return; // never auto-update sensitive entries
+    if (currentValue === entry.value) return; // unchanged
+    if (currentValue === el.dataset.dittoPreFocusValue) return; // not actually edited
+
+    if (autoSave) {
+      // Silent update — keeps the profile in sync with the user's latest input
+      doUpdateEntry(entry.id, currentValue).catch(() => {});
+    } else {
+      // Show the amber learn pill repurposed as an update prompt
+      const label = entry.display_label || 'Field';
+      showLearnPill({ el, label: `Update ${label}?`, value: currentValue });
+    }
+  });
 }
 
 function attachLearnListeners(el: HTMLElement): void {
@@ -375,7 +494,35 @@ async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string)
 function handleLearnSave(target: { el: HTMLElement; label: string; value: string }): void {
   const state = matchMap.get(target.el);
   if (!state) return;
+
+  // If the field is already matched to an existing entry and the value differs,
+  // treat the click as an UPDATE rather than a new LEARN.
+  if (state.result.status === 'MATCHED' && state.entry && state.entry.value !== target.value) {
+    doUpdateEntry(state.entry.id, target.value).catch(() => {});
+    return;
+  }
+
   doLearnField(target.el, state.sig, target.value).catch(() => {});
+}
+
+async function doUpdateEntry(id: string, value: string): Promise<void> {
+  try {
+    const updated = await sendToBackground<ProfileEntry>('UPDATE_ENTRY', {
+      id,
+      patch: { value },
+    });
+    // Keep local profile cache in sync so subsequent scans use the new value
+    const idx = profile.findIndex(p => p.id === id);
+    if (idx >= 0) profile[idx] = updated;
+    // Update the matchMap entry pointer too
+    for (const [el, state] of matchMap) {
+      if (state.entry?.id === id) {
+        matchMap.set(el, { ...state, entry: updated });
+      }
+    }
+  } catch {
+    // Network/storage error — non-fatal; user can re-edit
+  }
 }
 
 function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: ProfileEntry): void {

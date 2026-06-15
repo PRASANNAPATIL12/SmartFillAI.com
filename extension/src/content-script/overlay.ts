@@ -31,10 +31,15 @@ export interface EssayTarget {
 
 // ── Shadow host ───────────────────────────────────────────────────────────────
 
-const HOST_ID = 'ditto-overlay-host';
+const HOST_ID = 'smartfillai-overlay-host';
 let host:   HTMLElement | null = null;
 let shadow: ShadowRoot  | null = null;
 let pillEl: HTMLElement | null = null;
+
+/** Exported so the banner module can render into the same Shadow DOM. */
+export function getOverlayShadow(): ShadowRoot {
+  return ensureHost();
+}
 
 function ensureHost(): ShadowRoot {
   if (shadow) return shadow;
@@ -145,6 +150,84 @@ function ensureHost(): ShadowRoot {
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .ep-error { font-size: 11px; color: #ef4444; margin-top: 8px; }
+
+    /* ── Proactive page banner ── */
+    .sfa-banner {
+      position: fixed;
+      top: 16px; right: 16px;
+      min-width: 280px; max-width: 360px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #6366f1;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+      padding: 12px 14px;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      pointer-events: all;
+      opacity: 0; transform: translateX(20px);
+      animation: sfa-slide-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      z-index: 2;
+    }
+    .sfa-banner.success { border-left-color: #10b981; }
+    .sfa-banner.empty   { border-left-color: #94a3b8; }
+    @keyframes sfa-slide-in {
+      to { opacity: 1; transform: translateX(0); }
+    }
+    .sfa-banner-header {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 6px;
+    }
+    .sfa-banner-brand {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #6366f1;
+      text-transform: uppercase;
+    }
+    .sfa-banner-brand::before {
+      content: '✨'; font-size: 12px;
+    }
+    .sfa-banner-spacer { flex: 1; }
+    .sfa-banner-close {
+      background: none; border: none; cursor: pointer;
+      font-size: 16px; color: #94a3b8; padding: 0;
+      line-height: 1; width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .sfa-banner-close:hover { color: #475569; }
+    .sfa-banner-title {
+      font-size: 14px; font-weight: 600;
+      color: #0f172a;
+      line-height: 1.35;
+      margin-bottom: 10px;
+    }
+    .sfa-banner-actions {
+      display: flex; gap: 8px;
+    }
+    .sfa-banner-primary {
+      flex: 1;
+      background: #6366f1;
+      color: #fff;
+      border: none; border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 13px; font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      font-family: inherit;
+    }
+    .sfa-banner-primary:hover { background: #4f46e5; }
+    .sfa-banner-primary:disabled { background: #cbd5e1; cursor: default; }
+    .sfa-banner-secondary {
+      background: #f1f5f9;
+      color: #475569;
+      border: none; border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px; font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+      font-family: inherit;
+    }
+    .sfa-banner-secondary:hover { background: #e2e8f0; }
   `;
   shadow.appendChild(style);
   document.documentElement.appendChild(host);

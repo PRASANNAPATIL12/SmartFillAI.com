@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Ditto — Universal Autofill",
+  "name": "SmartFillAI — Universal Autofill",
   "version": "1.0.0",
-  "description": "Fill any form on any website. Learns as you go. AI for the hard questions.",
+  "description": "SmartFillAI fills any form on any website. Proactively detects forms, learns as you go, AI for the hard questions.",
   "permissions": [
     "activeTab",
     "storage",
