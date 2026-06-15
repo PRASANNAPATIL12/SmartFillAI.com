@@ -200,7 +200,12 @@ function refreshBanner(): void {
     totalDetected++;
     if (state.result.status === 'MATCHED' && state.entry) {
       matched++;
-      if (el.dataset.dittoFilled !== 'true') unfilled++;
+      // A field is "unfilled" when it has no value. We check the value
+      // directly (not the dataset marker) because React/Vue SPAs replace
+      // DOM nodes on re-render, blowing away any dataset we set. The
+      // value, in contrast, is restored from the framework's state.
+      const v = (el as HTMLInputElement).value ?? '';
+      if (v.trim() === '') unfilled++;
     }
   }
   console.log('[SmartFillAI] refreshBanner: detected', totalDetected, 'matched', matched, 'unfilled', unfilled, 'matchMap size', matchMap.size, 'isTopFrame:', isTopFrame);
@@ -582,27 +587,36 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('blur',       hide);
 
   // Update-detection — capture the original profile value so we know if
-  // the user edits a pre-filled field to a different value.
+  // the user edits a pre-filled field to a different value. We listen for
+  // both blur and change so combobox option-picks are caught even when
+  // focus stays on the input.
   el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   el.addEventListener('focus', () => {
     el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   });
-  el.addEventListener('blur', () => {
-    const currentValue = (el as HTMLInputElement).value ?? '';
-    if (!currentValue) return;
-    if (entry.sensitive) return; // never auto-update sensitive entries
-    if (currentValue === entry.value) return; // unchanged
-    if (currentValue === el.dataset.dittoPreFocusValue) return; // not actually edited
 
-    if (autoSave) {
-      // Silent update — keeps the profile in sync with the user's latest input
-      doUpdateEntry(entry.id, currentValue).catch(() => {});
-    } else {
-      // Show the amber learn pill repurposed as an update prompt
-      const label = entry.display_label || 'Field';
-      showLearnPill({ el, label: `Update ${label}?`, value: currentValue });
-    }
-  });
+  let updateTimer: ReturnType<typeof setTimeout> | undefined;
+  const tryUpdate = (): void => {
+    clearTimeout(updateTimer);
+    updateTimer = setTimeout(() => {
+      const currentValue = ((el as HTMLInputElement).value ?? '').trim();
+      if (!currentValue) return;
+      if (entry.sensitive) return; // never auto-update sensitive entries
+      if (currentValue === entry.value) return; // unchanged
+      if (currentValue === (el.dataset.dittoPreFocusValue ?? '').trim()) return;
+
+      if (autoSave) {
+        doUpdateEntry(entry.id, currentValue).catch(() => {});
+        el.dataset.dittoPreFocusValue = currentValue; // dedup against blur
+      } else {
+        const label = entry.display_label || 'Field';
+        showLearnPill({ el, label: `Update ${label}?`, value: currentValue });
+      }
+    }, 200);
+  };
+
+  el.addEventListener('blur',   tryUpdate);
+  el.addEventListener('change', tryUpdate);
 }
 
 function attachLearnListeners(el: HTMLElement): void {
@@ -614,28 +628,40 @@ function attachLearnListeners(el: HTMLElement): void {
     el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   });
 
-  el.addEventListener('blur', () => {
-    // Skip if Ditto already filled this field
-    if (el.dataset.dittoFilled === 'true') return;
+  // Debounced shared handler — fires from either `blur` or `change`. The
+  // change event is critical for ARIA comboboxes (Degree, Country) where
+  // the user clicks an option and focus often stays on the input — blur
+  // never arrives, but change does.
+  let learnTimer: ReturnType<typeof setTimeout> | undefined;
+  const tryLearn = (): void => {
+    clearTimeout(learnTimer);
+    learnTimer = setTimeout(() => {
+      // Skip if Ditto already filled this field
+      if (el.dataset.dittoFilled === 'true') return;
 
-    const currentValue = (el as HTMLInputElement).value ?? '';
-    const preFocus     = el.dataset.dittoPreFocusValue ?? '';
+      const currentValue = ((el as HTMLInputElement).value ?? '').trim();
+      const preFocus     = (el.dataset.dittoPreFocusValue ?? '').trim();
 
-    // Only offer to learn if the user typed something non-empty and different
-    if (!currentValue || currentValue === preFocus) return;
+      // Require a non-empty value that's different from the pre-focus value
+      if (!currentValue || currentValue === preFocus) return;
 
-    const state = matchMap.get(el);
-    if (!state || state.result.status !== 'UNKNOWN') return;
+      const state = matchMap.get(el);
+      if (!state || state.result.status !== 'UNKNOWN') return;
 
-    if (autoSave) {
-      // Silent save — no confirm pill needed
-      doLearnField(el, state.sig, currentValue).catch(() => {});
-    } else {
-      // Show amber confirm pill
-      const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder || state.sig.name || state.sig.id || 'Field';
-      showLearnPill({ el, label, value: currentValue });
-    }
-  });
+      if (autoSave) {
+        // Silent save — no confirm pill needed
+        doLearnField(el, state.sig, currentValue).catch(() => {});
+        // Update pre-focus baseline so a subsequent blur doesn't re-learn
+        el.dataset.dittoPreFocusValue = currentValue;
+      } else {
+        const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder || state.sig.name || state.sig.id || 'Field';
+        showLearnPill({ el, label, value: currentValue });
+      }
+    }, 200);
+  };
+
+  el.addEventListener('blur',   tryLearn);
+  el.addEventListener('change', tryLearn);
 }
 
 function attachEssayPillListeners(el: HTMLElement, sig: FieldSignature): void {
