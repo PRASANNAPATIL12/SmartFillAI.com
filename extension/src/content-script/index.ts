@@ -81,6 +81,16 @@ let lastReportedMatched  = -1;
 let lastReportedTotal    = -1;
 let lastReportedUnfilled = -1;
 
+// ── Part 2: reliable learning for ARIA comboboxes + custom dropdowns ──────────
+// ARIA comboboxes (Greenhouse, react-select, downshift, Workday) commit
+// option selections via setState — no native blur/change event fires that
+// our per-field listeners can hear. The fix is a unified learn path called
+// from FOUR triggers: per-field blur/change (fast), document focusout
+// (catches "user clicked somewhere else"), document submit (last chance
+// before navigation), and a periodic 2.5s sweep (catches everything else).
+const LEARN_SWEEP_INTERVAL_MS = 2500;
+let learnSweepTimer: ReturnType<typeof setInterval> | undefined;
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
@@ -113,6 +123,17 @@ async function init(): Promise<void> {
   };
   window.addEventListener('scroll', onReposition, { passive: true });
   window.addEventListener('resize', onReposition);
+
+  // Part 2 — Reliable learning. Three safety nets that catch dropdown
+  // selections regardless of how the framework commits them:
+  //   1. focusout (catches user moving focus away)
+  //   2. submit (last chance before page navigation)
+  //   3. 2.5s periodic sweep (catches selections where focus never leaves)
+  document.addEventListener('focusout', handleGlobalFocusOut, true);
+  document.addEventListener('submit',   handleGlobalSubmit,   true);
+  if (learnSweepTimer === undefined) {
+    learnSweepTimer = setInterval(runLearnSweep, LEARN_SWEEP_INTERVAL_MS);
+  }
 
   await scanFields();
   // Steps 5+6 run after deterministic steps — async, never blocks initial render
@@ -626,37 +647,114 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('mouseleave', hide);
   el.addEventListener('blur',       hide);
 
-  // Update-detection — capture the original profile value so we know if
-  // the user edits a pre-filled field to a different value. We listen for
-  // both blur and change so combobox option-picks are caught even when
-  // focus stays on the input.
+  // Update-detection — capture the original profile value so tryLearnField
+  // can tell whether the user actually edited the field this focus session.
   el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   el.addEventListener('focus', () => {
     el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   });
 
   let updateTimer: ReturnType<typeof setTimeout> | undefined;
-  const tryUpdate = (): void => {
+  const trigger = (): void => {
     clearTimeout(updateTimer);
-    updateTimer = setTimeout(() => {
-      const currentValue = ((el as HTMLInputElement).value ?? '').trim();
-      if (!currentValue) return;
-      if (entry.sensitive) return; // never auto-update sensitive entries
-      if (currentValue === entry.value) return; // unchanged
-      if (currentValue === (el.dataset.dittoPreFocusValue ?? '').trim()) return;
-
-      if (autoSave) {
-        doUpdateEntry(entry.id, currentValue).catch(() => {});
-        el.dataset.dittoPreFocusValue = currentValue; // dedup against blur
-      } else {
-        const label = entry.display_label || 'Field';
-        showLearnPill({ el, label: `Update ${label}?`, value: currentValue });
-      }
-    }, 200);
+    updateTimer = setTimeout(() => tryLearnField(el), 200);
   };
 
-  el.addEventListener('blur',   tryUpdate);
-  el.addEventListener('change', tryUpdate);
+  el.addEventListener('blur',   trigger);
+  el.addEventListener('change', trigger);
+}
+
+// ── Unified learn / update entrypoint ─────────────────────────────────────────
+// Called from FOUR places (per-element blur/change, document focusout, document
+// submit, periodic sweep). All converge here so dedup logic lives in one spot.
+//
+// Branches on the field's current matchMap state:
+//   UNKNOWN  → create a new profile entry (learn)
+//   MATCHED  → update the existing entry if the value has changed (update)
+//
+// Dedup uses `dataset.dittoLastLearnedValue` (for learn) and the existing
+// `dataset.dittoPreFocusValue` (for update). Both prevent the same value
+// being saved twice across rapid event fires (blur + change + focusout).
+function tryLearnField(el: HTMLElement): void {
+  if (!el.isConnected) return;
+  if (el.dataset.dittoFilled === 'true') return; // we just filled it
+
+  // Skip if user is still actively typing — but for ARIA comboboxes focus
+  // often stays on the input AFTER the user has committed an option, so
+  // for those we must NOT skip. Detect combobox by role/aria attributes.
+  if (document.activeElement === el) {
+    const isComboLike = el.getAttribute('role') === 'combobox'
+                    ||  el.getAttribute('aria-autocomplete') === 'list'
+                    ||  el.getAttribute('aria-autocomplete') === 'both';
+    if (!isComboLike) return;
+  }
+
+  const state = matchMap.get(el);
+  if (!state) return;
+
+  const rawValue = (el as HTMLInputElement).value ?? '';
+  const value    = rawValue.trim();
+  if (!value) return;
+
+  // ── UNKNOWN → learn (create new entry) ──
+  if (state.result.status === 'UNKNOWN') {
+    if (el.dataset.dittoLastLearnedValue === value) return; // already tried
+    el.dataset.dittoLastLearnedValue = value;
+    if (autoSave) {
+      console.log('[SmartFillAI] learn:', state.sig.label || state.sig.name || state.sig.id, '=', value);
+      doLearnField(el, state.sig, value).catch(() => {});
+    } else {
+      const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
+                 || state.sig.name  || state.sig.id        || 'Field';
+      showLearnPill({ el, label, value });
+    }
+    return;
+  }
+
+  // ── MATCHED → update if value has actually changed since focus ──
+  if (state.result.status === 'MATCHED' && state.entry) {
+    if (state.entry.sensitive) return;
+    if (value === state.entry.value) return;             // unchanged from profile
+    const preFocus = (el.dataset.dittoPreFocusValue ?? '').trim();
+    if (preFocus && value === preFocus) return;          // user opened+closed without editing
+    if (el.dataset.dittoLastLearnedValue === value) return;
+    el.dataset.dittoLastLearnedValue = value;
+    if (autoSave) {
+      console.log('[SmartFillAI] update:', state.entry.display_label, '→', value);
+      doUpdateEntry(state.entry.id, value).catch(() => {});
+      el.dataset.dittoPreFocusValue = value;
+    } else {
+      const label = state.entry.display_label || 'Field';
+      showLearnPill({ el, label: `Update ${label}?`, value });
+    }
+  }
+}
+
+// Periodic sweep — catches dropdown selections where neither blur nor change
+// fires (focus stays on the input after option click). Only runs for UNKNOWN
+// fields; MATCHED edits are picked up by the per-element listeners.
+function runLearnSweep(): void {
+  for (const [el, state] of matchMap) {
+    if (state.result.status !== 'UNKNOWN') continue;
+    tryLearnField(el);
+  }
+}
+
+// Global focus-out — fires whenever ANY element loses focus. Fastest path
+// for the "user clicked an option and then clicked elsewhere" pattern.
+function handleGlobalFocusOut(e: FocusEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  // Defer 100ms so the framework's option-click handler can finish updating
+  // the input's value before we read it.
+  setTimeout(() => tryLearnField(target), 100);
+}
+
+// Global submit — last-chance learn before the page navigates away.
+function handleGlobalSubmit(): void {
+  for (const [el] of matchMap) {
+    tryLearnField(el);
+  }
 }
 
 function attachLearnListeners(el: HTMLElement): void {
@@ -668,40 +766,17 @@ function attachLearnListeners(el: HTMLElement): void {
     el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
   });
 
-  // Debounced shared handler — fires from either `blur` or `change`. The
-  // change event is critical for ARIA comboboxes (Degree, Country) where
-  // the user clicks an option and focus often stays on the input — blur
-  // never arrives, but change does.
+  // Per-element fast path — debounced blur+change. The global focusout
+  // listener and 2.5s sweep are the safety nets that catch ARIA combobox
+  // option-picks (where blur/change don't reliably fire).
   let learnTimer: ReturnType<typeof setTimeout> | undefined;
-  const tryLearn = (): void => {
+  const trigger = (): void => {
     clearTimeout(learnTimer);
-    learnTimer = setTimeout(() => {
-      // Skip if Ditto already filled this field
-      if (el.dataset.dittoFilled === 'true') return;
-
-      const currentValue = ((el as HTMLInputElement).value ?? '').trim();
-      const preFocus     = (el.dataset.dittoPreFocusValue ?? '').trim();
-
-      // Require a non-empty value that's different from the pre-focus value
-      if (!currentValue || currentValue === preFocus) return;
-
-      const state = matchMap.get(el);
-      if (!state || state.result.status !== 'UNKNOWN') return;
-
-      if (autoSave) {
-        // Silent save — no confirm pill needed
-        doLearnField(el, state.sig, currentValue).catch(() => {});
-        // Update pre-focus baseline so a subsequent blur doesn't re-learn
-        el.dataset.dittoPreFocusValue = currentValue;
-      } else {
-        const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder || state.sig.name || state.sig.id || 'Field';
-        showLearnPill({ el, label, value: currentValue });
-      }
-    }, 200);
+    learnTimer = setTimeout(() => tryLearnField(el), 200);
   };
 
-  el.addEventListener('blur',   tryLearn);
-  el.addEventListener('change', tryLearn);
+  el.addEventListener('blur',   trigger);
+  el.addEventListener('change', trigger);
 }
 
 function attachEssayPillListeners(el: HTMLElement, sig: FieldSignature): void {
@@ -791,8 +866,10 @@ function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: Profi
 
   matchMap.set(el, { sig, result, entry: newEntry });
 
-  // Transition field from UNKNOWN → MATCHED visually
-  delete el.dataset.dittoLearnListeners; // allow fill listeners to attach
+  // Transition field from UNKNOWN → MATCHED visually + clear the learn-dedup
+  // marker so future edits flow through the update path cleanly.
+  delete el.dataset.dittoLearnListeners;     // allow pill listeners to attach
+  delete el.dataset.dittoLastLearnedValue;   // reset dedup for update path
   applyHint(el, result, newEntry, sig);
 }
 
