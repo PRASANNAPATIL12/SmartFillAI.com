@@ -243,6 +243,10 @@ function optionMatches(option: HTMLElement, aliases: string[]): boolean {
   return aliases.some(a => {
     const al = a.toLowerCase().trim();
     if (!al) return false;
+    // Short aliases (ISO2 codes, single-digit calling codes) use exact match only.
+    // Substring matching would cause false positives: "IN" (India) matches "Finland"
+    // because "finland".includes("in") is true, and Finland sorts before India.
+    if (al.length <= 2) return stripped === al || full === al;
     return stripped === al || stripped.includes(al) || full.includes(al);
   });
 }
@@ -306,7 +310,10 @@ export async function fillCombobox(
   value: string,
   canonicalKey?: string
 ): Promise<boolean> {
-  if (el.disabled || el.readOnly) return false;
+  if (el.disabled) return false;
+  // readOnly on a combobox input means the user can't TYPE (isSearchable: false in
+  // react-select), but the dropdown can still be opened and options clicked.
+  // We do NOT bail here — we skip the writeValue step below if readOnly.
 
   const aliases = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
     ? expandCountryAliases(value)
@@ -352,12 +359,17 @@ export async function fillCombobox(
   // Only reached when the open list has no matching option (very long lists
   // that only render the top-N until the user types to narrow them).
   //
+  // Skip for readOnly inputs (isSearchable: false in react-select) — typing
+  // has no effect when the input is readonly, so the list won't filter.
+  //
   // CRITICAL: after writeValue fires React's input event, the framework
   // re-renders the option list (new JSX → new DOM nodes). We MUST re-call
   // findListbox + getOptions to get fresh element references. Dispatching
   // mousedown on stale/detached nodes from before the re-render is a no-op.
-  writeValue(el, aliases[0]);
-  await sleep(220); // wait for React re-render to complete
+  if (!el.readOnly) {
+    writeValue(el, aliases[0]);
+    await sleep(220); // wait for React re-render to complete
+  }
 
   const freshListbox = findListbox(el);
   if (freshListbox) {
