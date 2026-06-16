@@ -5,6 +5,7 @@
   "description": "SmartFillAI fills any form on any website. Proactively detects forms, learns as you go, AI for the hard questions.",
   "permissions": [
     "activeTab",
+    "scripting",
     "storage",
     "identity",
     "alarms"
