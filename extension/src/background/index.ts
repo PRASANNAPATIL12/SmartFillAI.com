@@ -1,4 +1,5 @@
 import type { MessageType, ProfileEntry } from '@shared/types';
+import { STORAGE_KEYS } from '@shared/types';
 import { inferCanonicalKey, inferCategory, inferDisplayLabel, normalizeFieldValue, type SerializableFieldSig } from './field-learner';
 import {
   signIn,
@@ -101,6 +102,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// ── Profile CS-cache refresh ──────────────────────────────────────────────────
+// Keeps the content-script's SW-dormancy fallback (STORAGE_KEYS.PROFILE_CS_CACHE)
+// in sync with the authoritative profile store whenever a mutation occurs.
+// Without this, popup-initiated edits (add/update/delete) are invisible to the
+// CS cache, so a page refresh while the SW is dormant fills with stale values.
+
+async function refreshCSCache(): Promise<void> {
+  const entries = await getAllEntries();
+  await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE_CS_CACHE]: entries });
+}
+
 // ── Message router ────────────────────────────────────────────────────────────
 
 type HandlerFn = (
@@ -130,6 +142,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const userId  = (await getCurrentUserId()) ?? '';
     const created = await addEntry(data, userId);
     embedEntry(created).catch(() => {});
+    refreshCSCache().catch(() => {});
     return created;
   },
 
@@ -140,12 +153,15 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     if (patch.value || patch.display_label || patch.aliases) {
       embedEntry(updated).catch(() => {});
     }
+    refreshCSCache().catch(() => {});
     return updated;
   },
 
   DELETE_ENTRY: async (payload) => {
     const { id } = payload as { id: string };
-    return deleteEntry(id);
+    const ok = await deleteEntry(id);
+    refreshCSCache().catch(() => {});
+    return ok;
   },
 
   RECORD_USE: async (payload) => {
@@ -158,6 +174,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     // Bulk replace — used by the sync engine after a successful cloud pull
     const { entries } = payload as { entries: ProfileEntry[] };
     await replaceAll(entries);
+    refreshCSCache().catch(() => {});
     return { ok: true };
   },
 

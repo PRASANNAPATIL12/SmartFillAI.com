@@ -270,6 +270,8 @@ export const STORAGE_KEYS = {
   AI_COST_LOG: 'ai_cost_log_v1',
   FIELD_CACHE: 'field_cache_v1',
   SYNC_QUEUE: 'sync_queue_v1',
+  /** Content-script SW-dormancy fallback — must stay in sync with the live profile. */
+  PROFILE_CS_CACHE: 'sfa_profile_cache',
 } as const;
 
 // ============================================================================
