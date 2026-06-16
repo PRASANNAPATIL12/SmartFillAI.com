@@ -97,15 +97,101 @@ let lastReportedUnfilled = -1;
 const LEARN_SWEEP_INTERVAL_MS = 2500;
 let learnSweepTimer: ReturnType<typeof setInterval> | undefined;
 
+// ── Service-worker keep-alive ─────────────────────────────────────────────────
+// MV3 service workers sleep after ~30 s of inactivity. We send a lightweight
+// PING every 25 s so the SW stays warm while the user is on a form page.
+// This is not a hard guarantee (Chrome can still evict under memory pressure),
+// but it eliminates the most common cause of the SW going dark mid-session.
+const SW_PING_INTERVAL_MS = 25_000;
+let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
+
+function startKeepAlive(): void {
+  if (keepAliveTimer !== undefined) return;
+  keepAliveTimer = setInterval(() => {
+    sendToBackground('PING').catch(() => {
+      // PING failed → SW was evicted despite our efforts. The next real
+      // sendToBackground call (e.g. the next LEARN_FIELD) will wake it again.
+      // Nothing to do here — the timeout in messenger.ts prevents hangs.
+    });
+  }, SW_PING_INTERVAL_MS);
+}
+
+// ── Profile loading with SW-sleep fallback ────────────────────────────────────
+// If the service worker is asleep and takes too long to respond, messenger.ts
+// rejects after 8 s. We fall back to a chrome.storage.local snapshot written
+// on the last successful fetch, so the user still gets fills even if the SW
+// is slow to wake. A background retry then refreshes the data once the SW is up.
+const PROFILE_CACHE_KEY = 'sfa_profile_cache';
+
+async function loadProfile(): Promise<ProfileEntry[]> {
+  // Fast path: background is awake.
+  try {
+    const entries = await sendToBackground<ProfileEntry[]>('GET_PROFILE');
+    // Keep the local cache warm for the next SW-sleep scenario.
+    chrome.storage.local.set({ [PROFILE_CACHE_KEY]: entries }).catch(() => {});
+    sfaLog('profile loaded from background:', entries.length, 'entries');
+    return entries;
+  } catch (firstErr) {
+    sfaLog('GET_PROFILE failed on first attempt:', firstErr);
+  }
+
+  // Slow path: SW wake-up race. Wait 1 s for it to finish starting, then retry.
+  await new Promise(r => setTimeout(r, 1000));
+  try {
+    const entries = await sendToBackground<ProfileEntry[]>('GET_PROFILE');
+    chrome.storage.local.set({ [PROFILE_CACHE_KEY]: entries }).catch(() => {});
+    sfaLog('profile loaded from background (retry):', entries.length, 'entries');
+    return entries;
+  } catch (retryErr) {
+    sfaLog('GET_PROFILE failed on retry too — falling back to local cache:', retryErr);
+  }
+
+  // Final fallback: use the locally cached snapshot from the last successful session.
+  try {
+    const stored = await chrome.storage.local.get(PROFILE_CACHE_KEY);
+    const cached = stored[PROFILE_CACHE_KEY];
+    if (Array.isArray(cached) && cached.length > 0) {
+      sfaLog('profile loaded from local cache (SW was asleep):', cached.length, 'entries');
+      // Re-try fetching fresh data in the background once the SW has had more
+      // time to wake up. Re-scan with fresh data if it differs from the cache.
+      setTimeout(() => {
+        sendToBackground<ProfileEntry[]>('GET_PROFILE')
+          .then(fresh => {
+            chrome.storage.local.set({ [PROFILE_CACHE_KEY]: fresh }).catch(() => {});
+            const changed = fresh.length !== (cached as ProfileEntry[]).length
+              || fresh.some((e, i) => e.value !== (cached as ProfileEntry[])[i]?.value);
+            if (changed) {
+              profile = fresh;
+              scanFields().catch(() => {});
+            }
+          })
+          .catch(() => {});
+      }, 2000);
+      return cached as ProfileEntry[];
+    }
+  } catch {
+    // chrome.storage unavailable — very unusual, proceed with empty profile
+  }
+
+  sfaLog('profile unavailable — proceeding with empty profile');
+  return [];
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
   sfaLog('init() started');
   injectStyles();
 
-  // Fetch profile and settings in parallel
+  // Keep the SW alive while we're on this page so subsequent operations
+  // (learn, cache writes, embedding) don't hit the wake-up race.
+  startKeepAlive();
+
+  // Fetch profile (with SW-sleep fallback) and settings in parallel.
+  // loadProfile() already handles its own retry + local-cache fallback,
+  // so Promise.allSettled here is just for settings.
   const [fetchedProfile, fetchedSettings] = await Promise.allSettled([
-    sendToBackground<ProfileEntry[]>('GET_PROFILE'),
+    loadProfile(),
     sendToBackground<UserSettings>('GET_SETTINGS'),
   ]);
 
@@ -860,6 +946,9 @@ async function doUpdateEntry(id: string, value: string): Promise<void> {
         matchMap.set(el, { ...state, entry: updated });
       }
     }
+    // Persist updated profile to local cache so the next SW-sleep scenario
+    // gets the correct (post-edit) values immediately.
+    chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
   } catch {
     // Network/storage error — non-fatal; user can re-edit
   }
@@ -875,6 +964,8 @@ function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: Profi
   } else {
     profile.push(newEntry);
   }
+  // Keep local storage cache warm so next SW-sleep scenario has fresh data.
+  chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
 
   // Also propagate the new value to every matchMap entry that points at
   // this profile entry (a single canonical key can match multiple form
