@@ -34,65 +34,130 @@ export function isCombobox(el: HTMLElement): boolean {
   return false;
 }
 
-/** Return the wrapper element that holds the entire combobox widget. */
-function getComboboxWrapper(el: HTMLElement): HTMLElement {
-  return el.closest('[role="combobox"]') as HTMLElement
-      || el.parentElement
-      || el;
-}
 
 /**
- * STEP 6.6 — Many comboboxes (react-select, Greenhouse) store the selected
- * label in a sibling display node, not in input.value. Look for it so
- * tryLearnField can capture the user's selection even when the input is
- * empty after option click.
+ * Read the currently-selected display label from any combobox widget.
  *
- * Common patterns:
- *   - <div class="select__single-value">India +91</div>
- *   - <div class="rs__single-value">India +91</div>
- *   - <span aria-selected="true">India</span>
+ * THE CORE CHALLENGE — react-select / Greenhouse DOM layout:
+ *
+ *   div.control  (no role="combobox" in many versions)
+ *     div.value-container
+ *       div.single-value        ← "Associate's Degree"   ← what we want
+ *       div.input-container
+ *         input[aria-autocomplete="list"]  ← el  (we start here)
+ *
+ * The old code used `el.parentElement` as the "wrapper" and ran querySelector
+ * inside it. That only searches INSIDE input-container — single-value is a
+ * SIBLING of input-container, not a descendant. querySelector found nothing,
+ * returned '', and tryLearnField bailed out with `if (!value) return`.
+ *
+ * FIX: walk UP the ancestor chain (max 6 levels). At depth 1 we reach
+ * input-container (nothing), at depth 2 we reach value-container and
+ * querySelector finds single-value immediately. Works for deeply-nested
+ * custom wrappers too.
+ *
+ * Class selectors cover both naming conventions:
+ *   hyphen-case  : "single-value"  → react-select classNamePrefix pattern
+ *   camelCase    : "singleValue"   → emotion CSS-in-JS (e.g. css-abc-singleValue)
  */
 export function getComboboxDisplayValue(el: HTMLElement): string {
-  // First try input.value itself (some comboboxes keep it populated)
+  // 1. Some frameworks keep the committed value in input.value.
   const inputValue = ((el as HTMLInputElement).value ?? '').trim();
   if (inputValue) return inputValue;
 
-  const wrapper = getComboboxWrapper(el);
+  // 2. Walk UP through ancestors, searching at each level for a display element.
+  let ancestor: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && ancestor; depth++) {
 
-  // react-select / Greenhouse pattern — class contains "single-value"
-  const single = wrapper.querySelector<HTMLElement>('[class*="single-value"], [class*="singleValue"]');
-  const singleText = (single?.textContent ?? '').trim();
-  if (singleText) return singleText;
+    // ── Class-based patterns ───────────────────────────────────────────────
+    // Covers react-select 2/3/4/5, Greenhouse, Lever, Ashby, Workday
+    const byClass = ancestor.querySelector<HTMLElement>(
+      '[class*="single-value"], [class*="singleValue"], ' +
+      '[class*="selected-value"], [class*="selectedValue"], ' +
+      '[class*="value-text"], [class*="chosen-value"]'
+    );
+    if (byClass) {
+      const text = (byClass.textContent ?? '').trim();
+      if (
+        text &&
+        !byClass.contains(el) &&                      // not an ancestor of el
+        !byClass.closest('[role="listbox"]')           // not inside an open dropdown
+      ) {
+        return text;
+      }
+    }
 
-  // ARIA selected option as last resort
-  const selected = wrapper.querySelector<HTMLElement>('[aria-selected="true"]');
-  const selectedText = (selected?.textContent ?? '').trim();
-  if (selectedText) return selectedText;
+    // ── ARIA committed selection ───────────────────────────────────────────
+    // Some widgets mark the selected display element aria-selected="true"
+    // OUTSIDE of any listbox (i.e. it's the committed chip/tag, not a list item).
+    const byAria = ancestor.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (byAria) {
+      const text = (byAria.textContent ?? '').trim();
+      if (
+        text &&
+        !byAria.contains(el) &&
+        !byAria.closest('[role="listbox"]')            // skip highlighted option in open list
+      ) {
+        return text;
+      }
+    }
+
+    // ── Stop at hard widget boundaries ────────────────────────────────────
+    const role = ancestor.getAttribute('role');
+    if (role === 'listbox' || role === 'dialog') break;
+
+    ancestor = ancestor.parentElement;
+  }
 
   return '';
 }
 
-/** True when the combobox has a chosen value (input OR display has text). */
+/**
+ * True when the combobox has a committed value.
+ * Checks three things in order:
+ *  1. The dittoFilled marker on the input itself (set by fillCombobox)
+ *  2. The dittoFilled marker on any ancestor up to 5 levels (same walk-up as wrapper)
+ *  3. Whether getComboboxDisplayValue finds a non-empty label
+ */
 export function isComboboxFilled(el: HTMLElement): boolean {
   if (el.dataset.dittoFilled === 'true') return true;
-  const wrapper = getComboboxWrapper(el);
-  if (wrapper.dataset.dittoFilled === 'true') return true;
+
+  // Walk up looking for the dittoFilled marker we set on the wrapper in fillCombobox.
+  let ancestor: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && ancestor; depth++) {
+    if (ancestor.dataset.dittoFilled === 'true') return true;
+    const role = ancestor.getAttribute('role');
+    if (role === 'listbox' || role === 'dialog') break;
+    ancestor = ancestor.parentElement;
+  }
+
   return getComboboxDisplayValue(el).length > 0;
 }
 
 // ── Listbox lookup ────────────────────────────────────────────────────────────
 
 function findListbox(el: HTMLInputElement | HTMLTextAreaElement): HTMLElement | null {
+  // 1. aria-controls is the most explicit and reliable link
   const controls = el.getAttribute('aria-controls');
   if (controls) {
     const byId = document.getElementById(controls);
     if (byId) return byId;
   }
-  const wrapper = el.closest('[role="combobox"]') ?? el.parentElement;
-  if (wrapper) {
-    const listbox = wrapper.querySelector<HTMLElement>('[role="listbox"]');
+
+  // 2. Walk UP through ancestors looking for a listbox descendant.
+  //    Same reasoning as getComboboxDisplayValue: the listbox may be appended
+  //    as a sibling of the input-container, not a descendant, so searching
+  //    only el.parentElement is too shallow.
+  let ancestor: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 5 && ancestor; depth++) {
+    const listbox = ancestor.querySelector<HTMLElement>('[role="listbox"]');
     if (listbox) return listbox;
+    const role = ancestor.getAttribute('role');
+    if (role === 'dialog' || role === 'application') break;
+    ancestor = ancestor.parentElement;
   }
+
+  // 3. Last resort: any currently-visible listbox in the document
   const allListboxes = Array.from(document.querySelectorAll<HTMLElement>('[role="listbox"]'));
   const visible = allListboxes.find(lb => {
     const s = window.getComputedStyle(lb);
@@ -163,8 +228,6 @@ export async function fillCombobox(
     ? expandCountryAliases(value)
     : [value];
 
-  const wrapper = getComboboxWrapper(el);
-
   // 1. Focus to open the combobox
   el.focus();
   await sleep(40);
@@ -211,10 +274,18 @@ export async function fillCombobox(
     }
   }
 
-  // 5. Mark both the input and its wrapper as filled so refreshBanner /
-  //    ghost guards can see the success regardless of which one they check.
+  // 5. Mark the input AND every ancestor up to the combobox root as filled.
+  //    isComboboxFilled walks up the same chain, so any level it checks will
+  //    find the marker. This also survives react re-renders that replace the
+  //    input element — the ancestor div typically stays in the DOM.
   el.dataset.dittoFilled = 'true';
-  if (wrapper && wrapper !== el) wrapper.dataset.dittoFilled = 'true';
+  let markNode: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && markNode; depth++) {
+    markNode.dataset.dittoFilled = 'true';
+    const role = markNode.getAttribute('role');
+    if (role === 'combobox' || role === 'listbox') break;
+    markNode = markNode.parentElement;
+  }
 
   return true;
 }

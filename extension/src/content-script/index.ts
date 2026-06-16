@@ -224,8 +224,9 @@ async function init(): Promise<void> {
   //   3. pagehide + beforeunload — final escape hatch for SPA navigations
   //      that don't fire a submit event
   //   4. 2.5s periodic sweep — catches selections where focus never leaves
-  document.addEventListener('focusout',     handleGlobalFocusOut, true);
-  document.addEventListener('submit',       handleGlobalSubmit,   true);
+  document.addEventListener('focusout',     handleGlobalFocusOut,         true);
+  document.addEventListener('submit',       handleGlobalSubmit,           true);
+  document.addEventListener('mousedown',    handleListboxOptionMousedown,  true);
   window.addEventListener('beforeunload',   handleGlobalSubmit);
   window.addEventListener('pagehide',       handleGlobalSubmit);
   if (learnSweepTimer === undefined) {
@@ -830,12 +831,20 @@ function tryLearnField(el: HTMLElement): void {
 }
 
 // Periodic sweep — catches dropdown selections where neither blur nor change
-// fires (focus stays on the input after option click). Only runs for UNKNOWN
-// fields; MATCHED edits are picked up by the per-element listeners.
+// fires (focus stays on the input after option click).
+//
+// Also processes MATCHED comboboxes: per-element blur/change listeners don't
+// reliably fire for react-select (the library manages focus internally), so the
+// sweep is the safety net for detecting when a user changed a previously-saved
+// combobox value (e.g. changed Country from India → United States).
 function runLearnSweep(): void {
   for (const [el, state] of matchMap) {
-    if (state.result.status !== 'UNKNOWN') continue;
-    tryLearnField(el);
+    if (state.result.status === 'SKIP') continue;
+    if (state.result.status === 'UNKNOWN') {
+      tryLearnField(el);
+    } else if (state.result.status === 'MATCHED' && isCombobox(el)) {
+      tryLearnField(el);
+    }
   }
 }
 
@@ -844,9 +853,12 @@ function runLearnSweep(): void {
 function handleGlobalFocusOut(e: FocusEvent): void {
   const target = e.target as HTMLElement | null;
   if (!target) return;
-  // Defer 100ms so the framework's option-click handler can finish updating
-  // the input's value before we read it.
-  setTimeout(() => tryLearnField(target), 100);
+  // Comboboxes (react-select, Greenhouse) need more time: focusout fires during
+  // mousedown on the option (before React commits the selection). 200ms is
+  // enough for React 17/18 to update the single-value display node.
+  // Plain inputs: 100ms is sufficient for native change events to settle.
+  const delay = isCombobox(target as HTMLElement) ? 200 : 100;
+  setTimeout(() => tryLearnField(target), delay);
 }
 
 // Global submit — last-chance learn before the page navigates away.
@@ -854,6 +866,31 @@ function handleGlobalSubmit(): void {
   for (const [el] of matchMap) {
     tryLearnField(el);
   }
+}
+
+// Direct option-click capture — the most timing-reliable learn trigger.
+//
+// Rationale: focusout fires the moment the user presses the mouse button on an
+// option (before React has re-rendered), and tryLearnField called 100ms later
+// may still see the OLD single-value text (or none at all if React is mid-render).
+// By listening on mousedown in capture phase we know EXACTLY when an option was
+// chosen, and we delay 200ms — long enough for React 17/18 to commit the new
+// selection text into the single-value DOM node before we read it.
+//
+// Safe to call tryLearnField on ALL comboboxes: the dedup logic inside
+// (dittoLastLearnedValue check + profile-value comparison) prevents double-saves.
+function handleListboxOptionMousedown(e: MouseEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+
+  // Only act when the click lands on or inside a listbox option
+  if (!target.closest('[role="option"]')) return;
+
+  setTimeout(() => {
+    for (const [el] of matchMap) {
+      if (isCombobox(el)) tryLearnField(el);
+    }
+  }, 200);
 }
 
 function attachLearnListeners(el: HTMLElement): void {
