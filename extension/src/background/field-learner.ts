@@ -21,8 +21,9 @@ const AUTOCOMPLETE_MAP: Record<string, string> = {
   'postal-code':     'zip_code',
   'address-level1':  'state',
   'address-level2':  'city',
-  'country':         'country',
-  'country-name':    'country',
+  'country':             'country',
+  'country-name':        'country',
+  'tel-country-code':    'phone_country_code',
   'bday':            'date_of_birth',
   'url':             'website',
   'username':        'username',
@@ -56,6 +57,7 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
   [/\bzip\b|\bpostal\b/i,                                   'zip_code'],
   [/\bcity\b|\blocality\b/i,                                'city'],
   [/\bstate\b|\bprovince\b|\bregion\b/i,                   'state'],
+  [/dial.?code|calling.?code|phone.?country/i,              'phone_country_code'],
   [/\bcountry\b/i,                                          'country'],
   [/\blinkedin\b/i,                                         'linkedin_url'],
   [/\bgithub\b/i,                                           'github_url'],
@@ -74,7 +76,7 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 const CATEGORY_MAP: Record<string, string> = {
-  email: 'contact', phone_number: 'contact',
+  email: 'contact', phone_number: 'contact', phone_country_code: 'contact',
   address_line1: 'contact', address_line2: 'contact',
   city: 'contact', state: 'contact', zip_code: 'contact', country: 'contact',
   first_name: 'identity', last_name: 'identity', full_name: 'identity',
@@ -126,4 +128,48 @@ export function inferDisplayLabel(sig: SerializableFieldSig): string {
   // Capitalize first letter, trim whitespace, cap at 60 chars
   const clean = raw.trim().replace(/^./, c => c.toUpperCase());
   return clean.slice(0, 60);
+}
+
+// Known country names lookup table (subset — covers top 60 by app volume).
+// Used by normalizeFieldValue without DOM access so it can run in the background SW.
+const COUNTRY_NAMES: string[] = [
+  'India','United States','United Kingdom','Canada','Australia','Germany','France','Spain',
+  'Italy','Netherlands','Ireland','Poland','Sweden','Norway','Denmark','Finland','Switzerland',
+  'Austria','Belgium','Portugal','Czech Republic','Greece','Hungary','Romania','Ukraine',
+  'Russia','Turkey','Israel','Saudi Arabia','United Arab Emirates','South Africa','Nigeria',
+  'Kenya','Egypt','Morocco','Brazil','Mexico','Argentina','Chile','Colombia','Peru',
+  'China','Japan','South Korea','Taiwan','Hong Kong','Singapore','Malaysia','Indonesia',
+  'Thailand','Vietnam','Philippines','Pakistan','Bangladesh','Sri Lanka','Nepal','New Zealand',
+];
+
+/**
+ * Normalize a learned value for country/phone_country_code fields.
+ * Strips emoji flag prefixes and calling-code suffixes, then resolves
+ * to the canonical English country name when possible.
+ *
+ * Examples:
+ *   "🇮🇳 India +91" → "India"
+ *   "India +91"    → "India"
+ *   "🇮🇳 India"    → "India"
+ *   "+91"          → "+91"  (raw calling codes kept as-is)
+ *   "United States" → "United States"
+ */
+export function normalizeFieldValue(canonicalKey: string, value: string): string {
+  if (canonicalKey !== 'country' && canonicalKey !== 'phone_country_code') return value;
+
+  let v = value.trim();
+  if (!v) return value;
+
+  // Strip leading emoji flag (2 regional indicator codepoints, each U+1F1E0–U+1F1FF)
+  v = v.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim();
+
+  // Strip trailing calling-code suffix " +NNN"
+  v = v.replace(/\s*\+\d{1,4}\s*$/, '').trim();
+
+  if (!v) return value;
+
+  // Resolve to canonical country name (case-insensitive)
+  const lo = v.toLowerCase();
+  const match = COUNTRY_NAMES.find(n => n.toLowerCase() === lo);
+  return match ?? v;
 }

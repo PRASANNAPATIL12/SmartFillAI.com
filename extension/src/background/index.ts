@@ -1,5 +1,5 @@
 import type { MessageType, ProfileEntry } from '@shared/types';
-import { inferCanonicalKey, inferCategory, inferDisplayLabel, type SerializableFieldSig } from './field-learner';
+import { inferCanonicalKey, inferCategory, inferDisplayLabel, normalizeFieldValue, type SerializableFieldSig } from './field-learner';
 import {
   signIn,
   signOut,
@@ -239,6 +239,9 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const trimmed = value.length > 500 ? value.slice(0, 500) : value;
 
     const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
+    // Normalize country values: strip emoji flags and calling-code suffixes,
+    // resolve to canonical country name ("🇮🇳 India +91" → "India").
+    const normalizedTrimmed = normalizeFieldValue(canonicalKey, trimmed);
     const category     = inferCategory(canonicalKey);
     const displayLabel = inferDisplayLabel(sig);
     const userId       = (await getCurrentUserId()) ?? '';
@@ -250,8 +253,8 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     // result in ONE entry, not two.
     const existing = (await getAllEntries()).find(e => e.canonical_key === canonicalKey);
     if (existing) {
-      if (existing.value === trimmed) return existing; // no-op
-      const updated = await updateEntry(existing.id, { value: trimmed });
+      if (existing.value === normalizedTrimmed) return existing; // no-op
+      const updated = await updateEntry(existing.id, { value: normalizedTrimmed });
       if (updated) {
         embedEntry(updated).catch(() => {});
         return updated;
@@ -263,7 +266,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       canonical_key: canonicalKey,
       display_label: displayLabel,
       aliases:       [],
-      value:         trimmed,
+      value:         normalizedTrimmed,
       category,
       source:        'learned',
       sensitive:     false,

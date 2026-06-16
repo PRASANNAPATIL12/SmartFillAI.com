@@ -85,7 +85,7 @@ export interface FieldSignature {
   surroundingText: string;
 
   /** DOM element reference (not serializable, only in content script) */
-  element?: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+  element?: HTMLElement;
 }
 
 export type MatchStatus = 'MATCHED' | 'ESSAY' | 'UNKNOWN' | 'SKIP';

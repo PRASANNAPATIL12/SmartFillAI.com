@@ -48,9 +48,79 @@ export function extractAllFields(root: Document | Element = document): FieldSign
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
   >(selector));
 
-  return elements
+  const sigs = elements
     .filter(el => isVisible(el))
     .map(el => extractSignature(el));
+
+  // Also detect button-triggered phone country code pickers (e.g. intl-tel-input,
+  // react-phone-input-2) which use a <button> or <div> trigger rather than an <input>.
+  return [...sigs, ...extractButtonDropdowns(root)];
+}
+
+/**
+ * Find button-triggered phone country code pickers adjacent to <input type="tel">.
+ *
+ * Heuristic: for each visible tel input, check its container for a sibling/cousin
+ * button that either:
+ *   (a) has aria-haspopup / aria-expanded, OR
+ *   (b) shows a calling-code pattern (+NNN) or emoji flag in its text.
+ *
+ * Returns synthetic FieldSignatures with `autocomplete: "tel-country-code"` so the
+ * matcher always assigns canonical_key = "phone_country_code".
+ */
+function extractButtonDropdowns(root: Document | Element): FieldSignature[] {
+  const results: FieldSignature[] = [];
+  const FLAG_RE    = /^[\u{1F1E0}-\u{1F1FF}]{2}/u;
+  const CODE_RE    = /^\+\d{1,4}(\s|$)/;
+  const seen = new Set<HTMLElement>();
+
+  const telInputs = Array.from(
+    root.querySelectorAll<HTMLInputElement>('input[type="tel"]')
+  ).filter(el => isVisible(el));
+
+  for (const telEl of telInputs) {
+    // Search container: 2 levels up from the tel input
+    const container = telEl.parentElement?.parentElement ?? telEl.parentElement;
+    if (!container) continue;
+
+    const candidates = Array.from(container.querySelectorAll<HTMLElement>(
+      'button, [role="button"], [aria-haspopup], [aria-expanded]'
+    )).filter(el => isVisible(el) && el !== (telEl as HTMLElement) && !seen.has(el));
+
+    for (const btn of candidates) {
+      const text          = (btn.textContent ?? '').trim();
+      const hasAriaSignal = btn.hasAttribute('aria-haspopup') || btn.hasAttribute('aria-expanded');
+      const looksLikePicker = FLAG_RE.test(text) || CODE_RE.test(text);
+
+      if (!hasAriaSignal && !looksLikePicker) continue;
+
+      seen.add(btn);
+
+      const ariaLabel = btn.getAttribute('aria-label')?.trim() ?? '';
+      const label     = ariaLabel || 'Phone Country Code';
+
+      results.push({
+        label,
+        placeholder: '',
+        name:        btn.getAttribute('name') ?? '',
+        id:          btn.getAttribute('id')   ?? '',
+        ariaLabel,
+        // Synthetic autocomplete so the matcher always hits the phone_country_code rule.
+        autocomplete: 'tel-country-code',
+        inputType:   'button',
+        maxLength:   null,
+        surroundingText: [
+          telEl.getAttribute('aria-label') ?? '',
+          telEl.getAttribute('placeholder') ?? '',
+          telEl.getAttribute('name') ?? '',
+        ].join(' ').trim(),
+        element: btn,
+      });
+      break; // one picker per tel input
+    }
+  }
+
+  return results;
 }
 
 // ── Label resolution ──────────────────────────────────────────────────────────

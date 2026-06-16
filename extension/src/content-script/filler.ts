@@ -13,7 +13,8 @@
  *      el.value and syncs its own state.
  */
 
-import { isCombobox, fillCombobox } from './combobox';
+import { isCombobox, fillCombobox, fillButtonDropdown } from './combobox';
+import { expandCountryAliases } from './country-aliases';
 
 // Capture native setters from the extension's isolated world.
 // Page scripts cannot touch these because isolated worlds have separate prototypes.
@@ -39,7 +40,7 @@ const nativeSelectSetter = Object.getOwnPropertyDescriptor(
  * already echoed our value back through state). Setting lastValue='' makes
  * React see the upcoming write as a fresh change.
  */
-function resetReactValueTracker(el: HTMLInputElement | HTMLTextAreaElement): void {
+function resetReactValueTracker(el: HTMLElement): void {
   const tracker = (el as unknown as { _valueTracker?: { setValue: (v: string) => void } })._valueTracker;
   if (tracker && typeof tracker.setValue === 'function') {
     try { tracker.setValue(''); } catch { /* tracker may be frozen */ }
@@ -55,22 +56,28 @@ function resetReactValueTracker(el: HTMLInputElement | HTMLTextAreaElement): voi
  * resolve synchronously but the signature is async for uniformity.
  */
 export async function fillElement(
-  el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  el: HTMLElement,
   value: string,
   canonicalKey?: string
 ): Promise<boolean> {
-  if (el.disabled || (el as HTMLInputElement).readOnly) return false;
+  if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) return false;
 
   const before = (el as HTMLInputElement).value ?? '';
 
   try {
+    // Button-triggered custom dropdown (phone country code pickers, etc.)
+    if (el instanceof HTMLButtonElement || el.getAttribute('role') === 'button' ||
+        (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT')) {
+      return await fillButtonDropdown(el, value, canonicalKey);
+    }
+
     if (el instanceof HTMLSelectElement) {
-      return fillSelect(el, value);
+      return fillSelect(el, value, canonicalKey);
     }
 
     // ARIA combobox / custom dropdown — needs the type-then-click recipe
-    if (isCombobox(el)) {
-      return await fillCombobox(el as HTMLInputElement | HTMLTextAreaElement, value, canonicalKey);
+    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && isCombobox(el)) {
+      return await fillCombobox(el, value, canonicalKey);
     }
 
     const setter =
@@ -111,35 +118,46 @@ export async function fillElement(
   }
 }
 
-function fillSelect(el: HTMLSelectElement, value: string): boolean {
+function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): boolean {
   const options = Array.from(el.options);
 
-  // 1. Exact value attribute match
-  let target = options.find(o => o.value === value);
+  // For country-related fields expand to all aliases so "India" matches
+  // option text "🇮🇳 India +91", "+91", "IN", etc.
+  const valuesToTry = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
+    ? expandCountryAliases(value)
+    : [value];
 
-  // 2. Case-insensitive text match
-  if (!target) {
-    const lv = value.toLowerCase().trim();
-    target = options.find(o => o.text.toLowerCase().trim() === lv);
+  for (const tryValue of valuesToTry) {
+    const lv = tryValue.toLowerCase().trim();
+
+    // 1. Exact value attribute match
+    let target = options.find(o => o.value === tryValue);
+
+    // 2. Case-insensitive text match (strip emoji from option text)
+    if (!target) {
+      target = options.find(o => {
+        const optText = o.text.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
+        return optText === lv || o.text.toLowerCase().trim() === lv;
+      });
+    }
+
+    // 3. Partial containment
+    if (!target) {
+      const stripped = (t: string): string =>
+        t.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
+      target =
+        options.find(o => stripped(o.text).includes(lv) || o.text.toLowerCase().includes(lv)) ??
+        options.find(o => lv.includes(stripped(o.text)) && o.text.trim().length > 2);
+    }
+
+    if (target) {
+      if (nativeSelectSetter) nativeSelectSetter.call(el, target.value);
+      else el.value = target.value;
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      el.dataset.dittoFilled = 'true';
+      return true;
+    }
   }
 
-  // 3. Partial containment (e.g., "Male" matches option text "Male / Man")
-  if (!target) {
-    const lv = value.toLowerCase().trim();
-    target =
-      options.find(o => o.text.toLowerCase().includes(lv)) ??
-      options.find(o => lv.includes(o.text.toLowerCase().trim()) && o.text.trim().length > 2);
-  }
-
-  if (!target) return false;
-
-  if (nativeSelectSetter) {
-    nativeSelectSetter.call(el, target.value);
-  } else {
-    el.value = target.value;
-  }
-
-  el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-  el.dataset.dittoFilled = 'true';
-  return true;
+  return false;
 }

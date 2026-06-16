@@ -234,12 +234,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 function optionMatches(option: HTMLElement, aliases: string[]): boolean {
-  const text = (option.textContent ?? '').toLowerCase().trim();
-  if (!text) return false;
+  const rawText = (option.textContent ?? '').trim();
+  // Strip leading emoji flag sequences so "🇮🇳 India +91" compares cleanly.
+  // Keep the original for substring fallback so "+91" still matches "🇮🇳 India +91".
+  const stripped = rawText.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
+  const full     = rawText.toLowerCase();
+  if (!stripped && !full) return false;
   return aliases.some(a => {
     const al = a.toLowerCase().trim();
     if (!al) return false;
-    return text === al || text.includes(al);
+    return stripped === al || stripped.includes(al) || full.includes(al);
   });
 }
 
@@ -304,7 +308,7 @@ export async function fillCombobox(
 ): Promise<boolean> {
   if (el.disabled || el.readOnly) return false;
 
-  const aliases = canonicalKey === 'country'
+  const aliases = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
     ? expandCountryAliases(value)
     : [value];
 
@@ -376,4 +380,96 @@ export async function fillCombobox(
   const committed = getComboboxDisplayValue(el).length > 0;
   if (committed) markFilled(el);
   return committed;
+}
+
+/**
+ * Fill a button-triggered country/calling-code picker.
+ *
+ * Used for phone country code widgets that are implemented as a `<button>` or
+ * custom `<div>` rather than an `<input>`.  Common in intl-tel-input,
+ * react-phone-input-2, and bespoke ATS phone-number components.
+ *
+ * Algorithm:
+ *  1. Click the trigger button to open the dropdown panel.
+ *  2. Poll until a visible listbox or option list appears (up to 640ms).
+ *  3. Find the matching option using the same alias + emoji-strip logic as
+ *     fillCombobox.
+ *  4. Click the option (mousedown + click) and verify the button text changed.
+ */
+export async function fillButtonDropdown(
+  el: HTMLElement,
+  value: string,
+  canonicalKey?: string
+): Promise<boolean> {
+  const aliases = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
+    ? expandCountryAliases(value)
+    : [value];
+
+  // ── 1. Click the trigger to open the panel ───────────────────────────────
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+  el.click();
+  await sleep(120);
+
+  // ── 2. Poll for a visible dropdown/listbox ──────────────────────────────
+  // Some widgets append the panel to document.body (portal pattern), so we
+  // can't limit the search to el's subtree.
+  let panel: HTMLElement | null = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await sleep(80);
+
+    // Prefer [role="listbox"] (ARIA-compliant widgets)
+    const allListboxes = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="listbox"]')
+    );
+    const visibleListbox = allListboxes.find(lb => {
+      const s = window.getComputedStyle(lb);
+      return s.display !== 'none' && s.visibility !== 'hidden' && lb.offsetParent !== null;
+    });
+    if (visibleListbox) {
+      const opts = Array.from(visibleListbox.querySelectorAll<HTMLElement>(
+        '[role="option"], li, [data-option]'
+      )).filter(o => o.offsetParent !== null);
+      if (opts.length > 0) { panel = visibleListbox; break; }
+    }
+
+    // Fallback: intl-tel-input uses a <ul class="country-list">
+    const ulPanels = Array.from(
+      document.querySelectorAll<HTMLElement>('ul.country-list, .iti__country-list, .flag-dropdown ul')
+    );
+    const visibleUl = ulPanels.find(ul => {
+      const s = window.getComputedStyle(ul);
+      return s.display !== 'none' && s.visibility !== 'hidden';
+    });
+    if (visibleUl) { panel = visibleUl; break; }
+  }
+
+  if (!panel) return false;
+
+  // ── 3. Find matching option ─────────────────────────────────────────────
+  const options = Array.from(
+    panel.querySelectorAll<HTMLElement>('[role="option"], li, [data-option]')
+  ).filter(o => o.offsetParent !== null);
+
+  const pick = options.find(o => optionMatches(o, aliases));
+  if (!pick) return false;
+
+  // ── 4. Click the option and verify ─────────────────────────────────────
+  const beforeText = el.textContent?.trim() ?? '';
+  pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  pick.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+  pick.click();
+  await sleep(150);
+
+  // Verify: button text should have changed (or panel should have closed)
+  const afterText = el.textContent?.trim() ?? '';
+  const panelClosed = !document.body.contains(panel) || window.getComputedStyle(panel).display === 'none';
+  const textChanged = afterText !== beforeText && afterText.length > 0;
+
+  if (panelClosed || textChanged) {
+    el.dataset.dittoFilled = 'true';
+    return true;
+  }
+
+  return false;
 }

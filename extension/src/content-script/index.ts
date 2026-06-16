@@ -27,6 +27,7 @@ import {
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue } from './combobox';
+import { resolveCountry } from './country-aliases';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -688,7 +689,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
 
     const ok = await fillElement(
-      el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+      el,
       state.entry.value,
       state.entry.canonical_key
     );
@@ -711,7 +712,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 async function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): Promise<void> {
   if (!target.entry) return; // ESSAY pills have no entry
   const ok = await fillElement(
-    target.el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+    target.el,
     target.entry.value,
     target.entry.canonical_key
   );
@@ -838,10 +839,15 @@ function tryLearnField(el: HTMLElement): void {
   if (!state) return;
 
   // STEP 6.6 — For comboboxes, the chosen value may live in a sibling
-  // display element instead of input.value. Read whichever is non-empty.
+  // display element instead of input.value. Button-triggered pickers show
+  // their selection as textContent (e.g. "+91" or "🇮🇳 India").
+  const isButton = el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
+    || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT');
   const rawValue = comboLike
     ? getComboboxDisplayValue(el)
-    : ((el as HTMLInputElement).value ?? '');
+    : isButton
+      ? (el.textContent?.trim() ?? '')
+      : ((el as HTMLInputElement).value ?? '');
   const value    = rawValue.trim();
   if (!value) return;
 
@@ -863,20 +869,42 @@ function tryLearnField(el: HTMLElement): void {
   // ── MATCHED → update if value has actually changed since focus ──
   if (state.result.status === 'MATCHED' && state.entry) {
     if (state.entry.sensitive) return;
-    if (value === state.entry.value) return;             // unchanged from profile
+    // Normalize before comparing: "🇮🇳 India +91" and "India" are the same country.
+    const normalizedValue = normalizeLearnedValue(value, state.entry.canonical_key);
+    if (normalizedValue === state.entry.value) return;    // unchanged from profile
     const preFocus = (el.dataset.dittoPreFocusValue ?? '').trim();
-    if (preFocus && value === preFocus) return;          // user opened+closed without editing
-    if (el.dataset.dittoLastLearnedValue === value) return;
-    el.dataset.dittoLastLearnedValue = value;
+    if (preFocus && normalizedValue === normalizeLearnedValue(preFocus, state.entry.canonical_key)) return;
+    if (el.dataset.dittoLastLearnedValue === normalizedValue) return;
+    el.dataset.dittoLastLearnedValue = normalizedValue;
     if (autoSave) {
-      sfaLog('update:', state.entry.display_label, '→', value);
-      doUpdateEntry(state.entry.id, value).catch(() => {});
-      el.dataset.dittoPreFocusValue = value;
+      sfaLog('update:', state.entry.display_label, '→', normalizedValue);
+      doUpdateEntry(state.entry.id, normalizedValue).catch(() => {});
+      el.dataset.dittoPreFocusValue = normalizedValue;
     } else {
       const label = state.entry.display_label || 'Field';
-      showLearnPill({ el, label: `Update ${label}?`, value });
+      showLearnPill({ el, label: `Update ${label}?`, value: normalizedValue });
     }
   }
+}
+
+/**
+ * Normalize a learned country/phone-code value to its canonical country name.
+ * Strips emoji flag prefixes and "+NNN" calling-code suffixes, then resolves
+ * via the country lookup table.  Returns the value unchanged for non-country keys.
+ *
+ * Examples:
+ *   "🇮🇳 India +91", key="country"             → "India"
+ *   "India +91",     key="phone_country_code"   → "India"
+ *   "John Smith",    key="first_name"            → "John Smith"
+ */
+function normalizeLearnedValue(value: string, canonicalKey: string): string {
+  if (canonicalKey !== 'country' && canonicalKey !== 'phone_country_code') return value;
+  let v = value.trim();
+  v = v.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim();  // strip flag emoji
+  v = v.replace(/\s*\+\d{1,4}\s*$/, '').trim();               // strip +NNN suffix
+  if (!v) return value;
+  const resolved = resolveCountry(v);
+  return resolved ? resolved.name : v;
 }
 
 // Periodic sweep — catches dropdown selections where neither blur nor change
@@ -891,8 +919,11 @@ function runLearnSweep(): void {
     if (state.result.status === 'SKIP') continue;
     if (state.result.status === 'UNKNOWN') {
       tryLearnField(el);
-    } else if (state.result.status === 'MATCHED' && isCombobox(el)) {
-      tryLearnField(el);
+    } else if (state.result.status === 'MATCHED') {
+      // Sweep MATCHED comboboxes AND button-triggered pickers (phone country code etc.)
+      if (isCombobox(el) || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button') {
+        tryLearnField(el);
+      }
     }
   }
 }
@@ -1180,7 +1211,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return false;
     }
     fillElement(
-      el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+      el,
       state.entry.value,
       state.entry.canonical_key,
     ).then((ok) => {

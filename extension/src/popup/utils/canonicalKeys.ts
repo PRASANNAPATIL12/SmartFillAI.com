@@ -15,7 +15,8 @@ export const CANONICAL_KEY_OPTIONS: CanonicalKeyOption[] = [
   { key: 'city',            label: 'City',               category: 'contact' },
   { key: 'state',           label: 'State / Province',   category: 'contact' },
   { key: 'zip_code',        label: 'Zip / Postal Code',  category: 'contact' },
-  { key: 'country',         label: 'Country',            category: 'contact' },
+  { key: 'country',             label: 'Country',            category: 'contact' },
+  { key: 'phone_country_code', label: 'Phone Country Code', category: 'contact' },
   // Identity
   { key: 'full_name',       label: 'Full Name',          category: 'identity' },
   { key: 'first_name',      label: 'First Name',         category: 'identity' },

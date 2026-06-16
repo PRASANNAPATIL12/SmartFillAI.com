@@ -82,21 +82,36 @@ const COUNTRIES: CountryAliases[] = [
 /**
  * Resolve a user-supplied country string to its canonical record.
  * Accepts any of: name (case-insensitive), ISO2 ("IN"), calling code
- * with or without `+` ("+91", "91").
+ * with or without `+` ("+91", "91"), emoji-prefixed names ("🇮🇳 India"),
+ * and name+code combos ("India +91", "🇮🇳 India +91").
  */
 export function resolveCountry(input: string): CountryAliases | null {
   if (!input) return null;
-  const v = input.trim().toLowerCase();
-  if (!v) return null;
+  const raw = input.trim();
+  if (!raw) return null;
 
-  // Strip leading + for calling-code lookups
-  const noPlus = v.replace(/^\+/, '');
-
+  // Fast path: direct lookups (name, ISO2, calling code)
+  const lo = raw.toLowerCase();
+  const noPlus = lo.replace(/^\+/, '');
   for (const c of COUNTRIES) {
-    if (c.name.toLowerCase() === v) return c;
-    if (c.iso2.toLowerCase()  === v) return c;
+    if (c.name.toLowerCase() === lo) return c;
+    if (c.iso2.toLowerCase()  === lo) return c;
     if (c.callingCode         === noPlus) return c;
   }
+
+  // Normalizing path: strip emoji flag prefix and/or trailing calling-code suffix.
+  // Handles: "🇮🇳 India +91" → "India", "India +91" → "India", "🇮🇳 India" → "India"
+  let stripped = raw;
+  stripped = stripped.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim();  // strip flag emoji
+  stripped = stripped.replace(/\s*\+\d{1,4}\s*$/, '').trim();               // strip +NNN suffix
+  if (stripped && stripped !== raw) {
+    const strLo = stripped.toLowerCase();
+    for (const c of COUNTRIES) {
+      if (c.name.toLowerCase() === strLo) return c;
+      if (c.iso2.toLowerCase()  === strLo) return c;
+    }
+  }
+
   return null;
 }
 
