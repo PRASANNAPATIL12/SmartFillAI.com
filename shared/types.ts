@@ -84,11 +84,14 @@ export interface FieldSignature {
   /** Text content of surrounding elements */
   surroundingText: string;
 
+  /** accept attribute for file inputs (e.g. ".pdf,.doc,.docx") */
+  accept?: string;
+
   /** DOM element reference (not serializable, only in content script) */
   element?: HTMLElement;
 }
 
-export type MatchStatus = 'MATCHED' | 'ESSAY' | 'UNKNOWN' | 'SKIP';
+export type MatchStatus = 'MATCHED' | 'ESSAY' | 'FILE_UPLOAD' | 'UNKNOWN' | 'SKIP';
 
 export interface MatchResult {
   /** Match status */
@@ -105,6 +108,9 @@ export interface MatchResult {
 
   /** Which step in waterfall matched */
   matchStep?: number;
+
+  /** If FILE_UPLOAD: which document type is expected */
+  docType?: DocumentType;
 }
 
 // ============================================================================
@@ -166,6 +172,38 @@ export interface ResumeParseResult {
   }>;
   skills: string[];
   certifications: string[];
+}
+
+// ============================================================================
+// Documents (Resume / Cover Letter file storage)
+// ============================================================================
+
+export type DocumentType = 'resume' | 'cover_letter';
+
+export interface StoredDocument {
+  id: string;
+  userId: string;
+  docType: DocumentType;
+  label: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  /** Actual file bytes — stored in IDB only, never serialized over messages */
+  fileData?: ArrayBuffer;
+  extractedText: string | null;
+  isDefault: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Metadata-only view (no fileData) safe for message passing */
+export type DocumentMeta = Omit<StoredDocument, 'fileData'>;
+
+/** Result from document-type detection on a file upload field */
+export interface FileFieldMatch {
+  docType: DocumentType | null;
+  confidence: number;
+  reason: string;
 }
 
 // ============================================================================
@@ -272,6 +310,8 @@ export const STORAGE_KEYS = {
   SYNC_QUEUE: 'sync_queue_v1',
   /** Content-script SW-dormancy fallback — must stay in sync with the live profile. */
   PROFILE_CS_CACHE: 'sfa_profile_cache',
+  /** Content-script document metadata cache — mirrors PROFILE_CS_CACHE pattern. */
+  DOCUMENTS_META_CACHE: 'documents_meta_cache_v1',
 } as const;
 
 // ============================================================================
@@ -307,6 +347,14 @@ export type MessageType =
   | 'GET_SESSION'
   // Step 6 LLM classifier (Task 8.1)
   | 'STEP6_CLASSIFY'
+  // Documents
+  | 'GET_DOCUMENTS'
+  | 'GET_DOCUMENT_BYTES'
+  | 'UPLOAD_DOCUMENT'
+  | 'UPDATE_DOCUMENT_META'
+  | 'REPLACE_DOCUMENT_FILE'
+  | 'DELETE_DOCUMENT'
+  | 'GET_DEFAULT_DOCUMENT'
   // Deferred (Tasks 4-8)
   | 'MATCH_FIELDS'
   | 'FILL_FIELD'

@@ -1,4 +1,4 @@
-import type { MessageType, ProfileEntry } from '@shared/types';
+import type { MessageType, ProfileEntry, DocumentType, StoredDocument } from '@shared/types';
 import { STORAGE_KEYS } from '@shared/types';
 import { inferCanonicalKey, inferCategory, inferDisplayLabel, normalizeFieldValue, type SerializableFieldSig } from './field-learner';
 import {
@@ -42,6 +42,13 @@ import {
   incrementCacheUse,
   evictStaleCacheEntries,
   type FieldCacheEntry,
+  saveDocument,
+  getDocumentMeta,
+  getDocumentBytes,
+  getAllDocumentMetas,
+  getDefaultDocument,
+  deleteDocument,
+  updateDocumentMeta,
 } from '@/storage/idb';
 
 // ── Alarm names ───────────────────────────────────────────────────────────────
@@ -111,6 +118,16 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 async function refreshCSCache(): Promise<void> {
   const entries = await getAllEntries();
   await chrome.storage.local.set({ [STORAGE_KEYS.PROFILE_CS_CACHE]: entries });
+}
+
+// ── Documents meta cache refresh ─────────────────────────────────────────────
+// Same pattern as refreshCSCache — keeps metadata (no file bytes) in
+// chrome.storage.local so the content script can check document availability
+// even when the SW is dormant.
+
+async function refreshDocumentsMetaCache(): Promise<void> {
+  const metas = await getAllDocumentMetas();
+  await chrome.storage.local.set({ [STORAGE_KEYS.DOCUMENTS_META_CACHE]: metas });
 }
 
 // ── Message router ────────────────────────────────────────────────────────────
@@ -297,6 +314,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       const updated = await updateEntry(existing.id, { value: normalizedTrimmed });
       if (updated) {
         embedEntry(updated).catch(() => {});
+        refreshCSCache().catch(() => {});
         return updated;
       }
       // Fall through to create only if update somehow failed
@@ -314,6 +332,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
     const created = await addEntry(data, userId);
     embedEntry(created).catch(() => {});
+    refreshCSCache().catch(() => {});
     return created;
   },
 
@@ -359,6 +378,163 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   SYNC_NOW: async () => {
     const [push, pull] = await Promise.all([pushSyncQueue(), pullFromCloud()]);
     return { pushed: push.pushed, failed: push.failed, pulled: pull.pulled };
+  },
+
+  // ── Documents ────────────────────────────────────────────────────────────────
+
+  GET_DOCUMENTS: async () => {
+    return getAllDocumentMetas();
+  },
+
+  GET_DOCUMENT_BYTES: async (payload) => {
+    const { id } = payload as { id: string };
+    const bytes = await getDocumentBytes(id);
+    if (!bytes) throw new Error('Document not found');
+    const binary = new Uint8Array(bytes);
+    let str = '';
+    for (let i = 0; i < binary.length; i++) str += String.fromCharCode(binary[i]);
+    return { base64: btoa(str) };
+  },
+
+  UPLOAD_DOCUMENT: async (payload) => {
+    const { docType, label, fileName, mimeType, fileDataBase64 } = payload as {
+      docType: DocumentType; label: string; fileName: string;
+      mimeType: string; fileDataBase64: string;
+    };
+    const userId = (await getCurrentUserId()) ?? '';
+
+    const binary = atob(fileDataBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    if (bytes.length > 10 * 1024 * 1024) throw new Error('File exceeds 10 MB limit');
+
+    // Un-default any existing doc of the same type
+    const existing = await getAllDocumentMetas();
+    for (const other of existing) {
+      if (other.docType === docType && other.isDefault) {
+        await updateDocumentMeta(other.id, { isDefault: false });
+      }
+    }
+
+    let extractedText: string | null = null;
+
+    // Auto-parse resume PDFs to update profile entries
+    if (docType === 'resume') {
+      try {
+        if (mimeType === 'application/pdf') {
+          const parsed = await parseResumePdf(fileDataBase64);
+          extractedText = JSON.stringify(parsed);
+          await createEntriesFromResume(parsed, userId);
+          refreshCSCache().catch(() => {});
+        } else if (mimeType === 'text/plain') {
+          const text = new TextDecoder().decode(bytes);
+          const parsed = await parseResumeText(text);
+          extractedText = text;
+          await createEntriesFromResume(parsed, userId);
+          refreshCSCache().catch(() => {});
+        }
+      } catch {
+        // Parse failure shouldn't block document storage
+      }
+    }
+
+    const doc: StoredDocument = {
+      id: crypto.randomUUID(),
+      userId,
+      docType,
+      label,
+      fileName,
+      mimeType,
+      fileSize: bytes.length,
+      fileData: bytes.buffer as ArrayBuffer,
+      extractedText,
+      isDefault: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    await saveDocument(doc);
+    refreshDocumentsMetaCache().catch(() => {});
+
+    const { fileData: _, ...meta } = doc;
+    return meta;
+  },
+
+  UPDATE_DOCUMENT_META: async (payload) => {
+    const { id, patch } = payload as { id: string; patch: { label?: string; isDefault?: boolean } };
+    if (patch.isDefault) {
+      const doc = await getDocumentMeta(id);
+      if (doc) {
+        const all = await getAllDocumentMetas();
+        for (const other of all) {
+          if (other.docType === doc.docType && other.id !== id && other.isDefault) {
+            await updateDocumentMeta(other.id, { isDefault: false });
+          }
+        }
+      }
+    }
+    const updated = await updateDocumentMeta(id, patch);
+    refreshDocumentsMetaCache().catch(() => {});
+    return updated;
+  },
+
+  REPLACE_DOCUMENT_FILE: async (payload) => {
+    const { id, fileName, mimeType, fileDataBase64 } = payload as {
+      id: string; fileName: string; mimeType: string; fileDataBase64: string;
+    };
+    const userId = (await getCurrentUserId()) ?? '';
+
+    const binary = atob(fileDataBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    if (bytes.length > 10 * 1024 * 1024) throw new Error('File exceeds 10 MB limit');
+
+    const existing = await getDefaultDocument(
+      (await getDocumentMeta(id))?.docType ?? 'resume'
+    );
+    if (!existing) throw new Error('Document not found');
+
+    let extractedText: string | null = null;
+    if (existing.docType === 'resume') {
+      try {
+        if (mimeType === 'application/pdf') {
+          const parsed = await parseResumePdf(fileDataBase64);
+          extractedText = JSON.stringify(parsed);
+          await createEntriesFromResume(parsed, userId);
+          refreshCSCache().catch(() => {});
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    await saveDocument({
+      ...existing,
+      fileName,
+      mimeType,
+      fileSize: bytes.length,
+      fileData: bytes.buffer as ArrayBuffer,
+      extractedText: extractedText ?? existing.extractedText,
+      updatedAt: Date.now(),
+    });
+    refreshDocumentsMetaCache().catch(() => {});
+
+    return getDocumentMeta(id);
+  },
+
+  DELETE_DOCUMENT: async (payload) => {
+    const { id } = payload as { id: string };
+    await deleteDocument(id);
+    refreshDocumentsMetaCache().catch(() => {});
+    return { ok: true };
+  },
+
+  GET_DEFAULT_DOCUMENT: async (payload) => {
+    const { docType } = payload as { docType: DocumentType };
+    const doc = await getDefaultDocument(docType);
+    if (!doc) return null;
+    const { fileData: _, ...meta } = doc;
+    return meta;
   },
 
   FILL_FIELD: () => {

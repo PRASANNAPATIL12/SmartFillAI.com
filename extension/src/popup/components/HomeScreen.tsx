@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import type { ProfileEntry } from '@shared/types';
+import type { DocumentMeta, ProfileEntry } from '@shared/types';
 import type { AIProviderName } from '@/ai-providers';
 import { sendToBackground, sendToActiveTab } from '../utils/messages';
 import { CATEGORY_LABELS, type EntryCategory } from '../utils/canonicalKeys';
@@ -13,18 +13,20 @@ interface SessionInfo {
 interface Props {
   provider:    AIProviderName;
   session:     SessionInfo | null;
-  onGoProfile: () => void;
-  onGoSettings: () => void;
-  onGoLogin:   () => void;
-  onSignOut:   () => void;
+  onGoProfile:   () => void;
+  onGoSettings:  () => void;
+  onGoDocuments: () => void;
+  onGoLogin:     () => void;
+  onSignOut:     () => void;
 }
 
 type FillState = 'idle' | 'filling' | 'done' | 'error';
 
 export default function HomeScreen({
-  provider, session, onGoProfile, onGoSettings, onGoLogin, onSignOut,
+  provider, session, onGoProfile, onGoSettings, onGoDocuments, onGoLogin, onSignOut,
 }: Props): React.ReactElement {
   const [entries,    setEntries]    = useState<ProfileEntry[]>([]);
+  const [docCount,   setDocCount]   = useState(0);
   const [fillState,  setFillState]  = useState<FillState>('idle');
   const [fillResult, setFillResult] = useState<{ filled: number; skipped: number } | null>(null);
   const [fillError,  setFillError]  = useState('');
@@ -34,6 +36,9 @@ export default function HomeScreen({
     sendToBackground<ProfileEntry[]>('GET_PROFILE')
       .then(setEntries)
       .catch(() => setEntries([]));
+    sendToBackground<DocumentMeta[]>('GET_DOCUMENTS')
+      .then(docs => setDocCount(docs.length))
+      .catch(() => setDocCount(0));
   }, []);
 
   const handleFill = useCallback(async () => {
@@ -179,6 +184,35 @@ export default function HomeScreen({
                 </button>
               ))}
             </div>
+          )}
+        </div>
+
+        {/* Documents */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Documents</span>
+            <button onClick={onGoDocuments} className="text-xs text-sky-500 hover:underline">
+              {docCount === 0 ? 'Upload' : 'Manage'}
+            </button>
+          </div>
+          {docCount === 0 ? (
+            <div className="bg-slate-50 rounded-xl p-3 text-center">
+              <p className="text-xs text-slate-400">Upload your resume to auto-attach it on applications.</p>
+              <button onClick={onGoDocuments}
+                className="mt-1.5 text-xs text-sky-500 font-medium hover:underline">
+                Upload document →
+              </button>
+            </div>
+          ) : (
+            <button onClick={onGoDocuments}
+              className="w-full flex items-center justify-between bg-slate-50 hover:bg-slate-100 rounded-xl px-3 py-2 transition-colors">
+              <span className="text-xs text-slate-600">
+                {docCount} document{docCount !== 1 ? 's' : ''} ready
+              </span>
+              <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
           )}
         </div>
 
