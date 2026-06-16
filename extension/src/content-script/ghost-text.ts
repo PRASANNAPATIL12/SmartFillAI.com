@@ -19,15 +19,33 @@ const ghosts = new WeakMap<HTMLElement, GhostState>();
 export function showGhost(target: HTMLElement, value: string): void {
   // Don't overlay on fields that already have content or are dropdowns/file inputs.
   if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+  if (!target.isConnected) return;  // element was replaced by a framework re-render
   if (target.value && target.value.length > 0) return;
   if (target.dataset.dittoFilled === 'true') return;
   if (!value.trim()) return;
 
-  // If a ghost already exists for this element, refresh its text.
+  // Guard against elements that have no layout yet (e.g. hidden, not yet mounted).
+  // getBoundingClientRect() on a detached/invisible element returns all zeros —
+  // a ghost created at (0,0) is invisible and wastes DOM nodes.
+  const rect = target.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return;
+
+  // If a ghost exists for this element, check whether it's still in the DOM.
+  // repositionAllGhosts() removes ghost DOM nodes WITHOUT clearing the WeakMap,
+  // so `existing` can be a stale entry pointing at a removed element.
+  // In that case, fall through to re-create the ghost with the current position.
   const existing = ghosts.get(target);
   if (existing) {
-    existing.ghost.textContent = truncate(value);
-    return;
+    if (existing.ghost.isConnected) {
+      // Ghost is still attached — just refresh its text and stop.
+      existing.ghost.textContent = truncate(value);
+      return;
+    }
+    // Stale entry: ghost was removed from DOM (by scroll handler, re-render, etc.)
+    // Clean up listeners and the WeakMap entry so we create a fresh ghost below.
+    target.removeEventListener('focus', existing.onFocus);
+    target.removeEventListener('input', existing.onInput);
+    ghosts.delete(target);
   }
 
   const ghost = document.createElement('div');
@@ -35,7 +53,6 @@ export function showGhost(target: HTMLElement, value: string): void {
   ghost.textContent = truncate(value);
 
   const style = window.getComputedStyle(target);
-  const rect  = target.getBoundingClientRect();
 
   Object.assign(ghost.style, {
     position:    'fixed',

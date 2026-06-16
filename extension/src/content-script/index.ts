@@ -651,6 +651,25 @@ async function runStep6(): Promise<void> {
 // ── Fill operations ───────────────────────────────────────────────────────────
 
 async function fillAll(): Promise<{ filled: number; skipped: number }> {
+  // Greenhouse and other React-based ATSes often do a second render pass
+  // after the initial page load (async data fetch, route hydration). This
+  // replaces the <input> elements with new ones, leaving matchMap with
+  // detached (stale) element references. Filling a detached element is a
+  // no-op — `document.contains(el)` returns false → every field is skipped
+  // → `filled = 0` → the user has to click fill a second time.
+  //
+  // Fix: if any matched element is no longer in the DOM, prune the dead
+  // refs and run a fresh scanFields() before proceeding. scanFields() will
+  // detect the new live elements, rebuild matchMap, and re-show ghost text
+  // at the correct positions — all before we touch a single input value.
+  const hasStaleRefs = [...matchMap.keys()].some(el => !el.isConnected);
+  if (hasStaleRefs) {
+    for (const el of Array.from(matchMap.keys())) {
+      if (!el.isConnected) matchMap.delete(el);
+    }
+    await scanFields();
+  }
+
   let filled = 0;
   let skipped = 0;
 
