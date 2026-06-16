@@ -11,6 +11,7 @@ sfaLog(
 );
 
 import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature, UserSettings } from '@shared/types';
+import { STORAGE_KEYS } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
 import { fillElement } from './filler';
@@ -122,7 +123,7 @@ function startKeepAlive(): void {
 // rejects after 8 s. We fall back to a chrome.storage.local snapshot written
 // on the last successful fetch, so the user still gets fills even if the SW
 // is slow to wake. A background retry then refreshes the data once the SW is up.
-const PROFILE_CACHE_KEY = 'sfa_profile_cache';
+const PROFILE_CACHE_KEY = STORAGE_KEYS.PROFILE_CS_CACHE;
 
 async function loadProfile(): Promise<ProfileEntry[]> {
   // Fast path: background is awake.
