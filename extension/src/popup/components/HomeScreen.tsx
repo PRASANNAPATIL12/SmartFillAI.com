@@ -53,11 +53,17 @@ export default function HomeScreen({
       setTimeout(() => setFillState('idle'), 3500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setFillError(
-        msg.includes('unavailable') || msg.includes('Cannot access')
-          ? 'Cannot fill this page. Try a regular website.'
-          : 'Fill failed — reload the page and try again.'
-      );
+      let errorText: string;
+      if (msg === 'restricted_page' || msg.includes('unavailable') || msg.includes('Cannot access')) {
+        errorText = 'Cannot fill this page. Try a regular website.';
+      } else if (msg === 'context_invalidated') {
+        errorText = 'Extension reloaded — refresh this page.';
+      } else if (msg === 'cs_unreachable') {
+        errorText = 'Page not ready — please refresh it.';
+      } else {
+        errorText = 'Fill failed — try refreshing the page.';
+      }
+      setFillError(errorText);
       setFillState('error');
       setTimeout(() => setFillState('idle'), 4000);
     }
