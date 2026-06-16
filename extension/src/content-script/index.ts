@@ -710,11 +710,33 @@ function applyHint(
   entry?: ProfileEntry,
   sig?: FieldSignature
 ): void {
+  // For comboboxes: check the live display value — NOT the dittoFilled marker —
+  // to decide whether the field still has a committed selection.
+  // dittoFilled on the element and its ancestors is cleared when the field
+  // is empty (so CSS outline reverts to "unfilled") and preserved when a
+  // selection is shown (so the outline stays "filled" across rescans).
+  if (isCombobox(el)) {
+    const hasCommittedValue = getComboboxDisplayValue(el).length > 0;
+    if (!hasCommittedValue) {
+      // Clear the marker on el and its ancestors (set by markFilled in combobox.ts)
+      delete el.dataset.dittoFilled;
+      let node: HTMLElement | null = el.parentElement;
+      for (let d = 0; d < 6 && node; d++) {
+        delete node.dataset.dittoFilled;
+        const r = node.getAttribute('role');
+        if (r === 'combobox' || r === 'listbox') break;
+        node = node.parentElement;
+      }
+    }
+    // If hasCommittedValue, leave dittoFilled markers alone — they're correct.
+  } else {
+    delete el.dataset.dittoFilled;
+  }
+
   // Clear previous state
   delete el.dataset.dittoMatch;
   delete el.dataset.dittoKey;
   delete el.dataset.dittoStatus;
-  delete el.dataset.dittoFilled;
 
   el.dataset.dittoStatus = result.status;
 

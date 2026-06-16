@@ -134,6 +134,39 @@ export function isComboboxFilled(el: HTMLElement): boolean {
   return getComboboxDisplayValue(el).length > 0;
 }
 
+// ── Control + listbox lookup ──────────────────────────────────────────────────
+
+/**
+ * Find the react-select Control div by walking UP from the input.
+ *
+ * react-select DOM layout:
+ *   SelectContainer
+ *     Control  ← depth 2 from the input; its onMouseDown opens/closes the menu
+ *       ValueContainer
+ *         SingleValue / Placeholder
+ *         InputContainer
+ *           input  ← el (our starting point)
+ *       IndicatorsContainer
+ *
+ * Dispatching mousedown on Control triggers react-select's onControlMouseDown
+ * → onMenuOpen(). This is more reliable than el.focus() alone because most
+ * react-select configs have menuOpenOnFocus: false.
+ *
+ * Falls back to depth-2 ancestor if no class name contains "control" (e.g.
+ * when emotion CSS-in-JS generates opaque class names). Depth 2 is almost
+ * always the Control div. Even if the fallback is wrong, the mousedown will
+ * still bubble up to react-select's delegated root listener and open the menu.
+ */
+function findControlAncestor(el: HTMLElement): HTMLElement {
+  let node: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && node; depth++) {
+    if (/control/i.test(node.getAttribute('class') ?? '')) return node;
+    node = node.parentElement;
+  }
+  // depth-2 fallback: input-container → value-container → control
+  return el.parentElement?.parentElement ?? el.parentElement ?? el;
+}
+
 // ── Listbox lookup ────────────────────────────────────────────────────────────
 
 function findListbox(el: HTMLInputElement | HTMLTextAreaElement): HTMLElement | null {
@@ -217,6 +250,53 @@ function dispatchKey(el: HTMLElement, key: string): void {
   el.dispatchEvent(new KeyboardEvent('keyup',   init));
 }
 
+/**
+ * Mark the input and every ancestor up to the combobox root as filled.
+ * isComboboxFilled walks the same chain, so it will find the marker
+ * regardless of which level React re-renders to.
+ */
+function markFilled(el: HTMLElement): void {
+  el.dataset.dittoFilled = 'true';
+  let node: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && node; depth++) {
+    node.dataset.dittoFilled = 'true';
+    const role = node.getAttribute('role');
+    if (role === 'combobox' || role === 'listbox') break;
+    node = node.parentElement;
+  }
+}
+
+/**
+ * Dispatch a click sequence on a listbox option and verify the selection
+ * was committed by checking the display value afterwards.
+ *
+ * Why mousedown is the key event: react-select's Option component handles
+ * onMouseDown (not onClick) to call selectOption(data) and close the menu.
+ * The sequence fires BEFORE the input loses focus from blur, so the
+ * selection commits before react-select's onBlur can clear the input.
+ *
+ * Returns true only if getComboboxDisplayValue confirms a non-empty committed value.
+ */
+async function clickOption(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  pick: HTMLElement,
+  listbox: HTMLElement
+): Promise<boolean> {
+  pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  pick.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+  pick.click();
+  await sleep(120);
+
+  // If the listbox is still attached + open, click didn't commit.
+  // Enter works for downshift, ariakit, and some custom dropdown libs.
+  if (listbox.isConnected && findListbox(el) !== null) {
+    dispatchKey(el, 'Enter');
+    await sleep(80);
+  }
+
+  return getComboboxDisplayValue(el).length > 0;
+}
+
 export async function fillCombobox(
   el: HTMLInputElement | HTMLTextAreaElement,
   value: string,
@@ -228,14 +308,23 @@ export async function fillCombobox(
     ? expandCountryAliases(value)
     : [value];
 
-  // 1. Focus to open the combobox
+  // ── 1. Focus the input ────────────────────────────────────────────────────
   el.focus();
-  await sleep(40);
+  await sleep(60);
 
-  // 2. Type the value so the combobox filters options
-  writeValue(el, aliases[0]);
+  // ── 2. Open the dropdown via mousedown on the Control ancestor ────────────
+  // Most react-select configs have menuOpenOnFocus: false — el.focus() moves
+  // keyboard focus but does NOT open the menu. Dispatching mousedown on the
+  // Control div triggers onControlMouseDown → onMenuOpen().
+  // Only fire if focus didn't already open the menu.
+  if (!findListbox(el)) {
+    const control = findControlAncestor(el);
+    control.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    control.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+    await sleep(60);
+  }
 
-  // 3. Wait for the listbox to render
+  // ── 3. Wait for the listbox to appear with visible options ────────────────
   let listbox: HTMLElement | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
     await sleep(80);
@@ -243,49 +332,48 @@ export async function fillCombobox(
     if (listbox && getOptions(listbox).length > 0) break;
   }
 
-  // 4. Find a matching option in the listbox, OR fall back to keyboard nav
+  // ── 4. Primary path: find option in the UNFILTERED open list ─────────────
+  // Greenhouse, Lever, Ashby and most ATSes show ALL options when the menu
+  // first opens. Finding the match here means we never call writeValue at all:
+  // no React re-render → DOM references stay fresh → no stale-element problem.
   if (listbox) {
-    const options = getOptions(listbox);
-    let pick: HTMLElement | undefined;
-    for (const opt of options) {
-      if (optionMatches(opt, aliases)) { pick = opt; break; }
-    }
-    if (!pick && options.length === 1) pick = options[0];
-
+    const pick = getOptions(listbox).find(o => optionMatches(o, aliases));
     if (pick) {
-      // Click sequence — most combobox libraries respond to one of these
-      pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      pick.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
-      pick.click();
-      await sleep(80);
-
-      // STEP 6.3 — If the listbox is still open, click didn't commit;
-      // try keyboard Enter (works with downshift, ariakit, some custom libs)
-      if (findListbox(el) === listbox && listbox.isConnected) {
-        dispatchKey(el, 'Enter');
-        await sleep(80);
-      }
-    } else {
-      // Couldn't find an option — try ArrowDown + Enter to pick the first
-      dispatchKey(el, 'ArrowDown');
-      await sleep(40);
-      dispatchKey(el, 'Enter');
-      await sleep(80);
+      const ok = await clickOption(el, pick, listbox);
+      if (ok) { markFilled(el); return true; }
     }
   }
 
-  // 5. Mark the input AND every ancestor up to the combobox root as filled.
-  //    isComboboxFilled walks up the same chain, so any level it checks will
-  //    find the marker. This also survives react re-renders that replace the
-  //    input element — the ancestor div typically stays in the DOM.
-  el.dataset.dittoFilled = 'true';
-  let markNode: HTMLElement | null = el.parentElement;
-  for (let depth = 0; depth < 6 && markNode; depth++) {
-    markNode.dataset.dittoFilled = 'true';
-    const role = markNode.getAttribute('role');
-    if (role === 'combobox' || role === 'listbox') break;
-    markNode = markNode.parentElement;
+  // ── 5. Secondary path: type to filter, then retry with FRESH references ───
+  // Only reached when the open list has no matching option (very long lists
+  // that only render the top-N until the user types to narrow them).
+  //
+  // CRITICAL: after writeValue fires React's input event, the framework
+  // re-renders the option list (new JSX → new DOM nodes). We MUST re-call
+  // findListbox + getOptions to get fresh element references. Dispatching
+  // mousedown on stale/detached nodes from before the re-render is a no-op.
+  writeValue(el, aliases[0]);
+  await sleep(220); // wait for React re-render to complete
+
+  const freshListbox = findListbox(el);
+  if (freshListbox) {
+    const freshOptions = getOptions(freshListbox);
+    let pick = freshOptions.find(o => optionMatches(o, aliases));
+    if (!pick && freshOptions.length === 1) pick = freshOptions[0];
+    if (pick) {
+      const ok = await clickOption(el, pick, freshListbox);
+      if (ok) { markFilled(el); return true; }
+    }
   }
 
-  return true;
+  // ── 6. Keyboard fallback ──────────────────────────────────────────────────
+  // Last resort: navigate to first option with ArrowDown and commit with Enter.
+  dispatchKey(el, 'ArrowDown');
+  await sleep(60);
+  dispatchKey(el, 'Enter');
+  await sleep(100);
+
+  const committed = getComboboxDisplayValue(el).length > 0;
+  if (committed) markFilled(el);
+  return committed;
 }
