@@ -109,10 +109,14 @@ let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
 function startKeepAlive(): void {
   if (keepAliveTimer !== undefined) return;
   keepAliveTimer = setInterval(() => {
-    sendToBackground('PING').catch(() => {
-      // PING failed → SW was evicted despite our efforts. The next real
-      // sendToBackground call (e.g. the next LEARN_FIELD) will wake it again.
-      // Nothing to do here — the timeout in messenger.ts prevents hangs.
+    sendToBackground('PING').catch((err: unknown) => {
+      // If the extension was updated the runtime context becomes invalid.
+      // Stop pinging — the tab needs a reload to get a fresh content script.
+      if (err instanceof Error && err.message.includes('Extension context invalidated')) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = undefined;
+      }
+      // Other failures (SW briefly evicted) are fine — the next real message wakes it.
     });
   }, SW_PING_INTERVAL_MS);
 }
@@ -1111,26 +1115,8 @@ function applyLearnedEntry(el: HTMLElement, sig: FieldSignature, newEntry: Profi
 }
 
 function injectStyles(): void {
-  if (document.getElementById('ditto-styles')) return;
-
-  const style = document.createElement('style');
-  style.id = 'ditto-styles';
-  // Subtle indigo outline on fillable fields; green for essay fields
-  style.textContent = `
-    [data-ditto-match="true"]:not([data-ditto-filled]) {
-      outline: 2px solid rgba(99, 102, 241, 0.35) !important;
-      outline-offset: 1px !important;
-    }
-    [data-ditto-filled="true"] {
-      outline: 2px solid rgba(99, 102, 241, 0.65) !important;
-      outline-offset: 1px !important;
-    }
-    [data-ditto-match="essay"] {
-      outline: 2px solid rgba(16, 185, 129, 0.35) !important;
-      outline-offset: 1px !important;
-    }
-  `;
-  (document.head ?? document.documentElement).appendChild(style);
+  // No field-level outlines — the overlay pill and ghost text provide enough
+  // visual feedback without drawing attention to every matched input box.
 }
 
 // ── Message listener (popup → content script) ─────────────────────────────────

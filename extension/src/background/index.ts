@@ -43,9 +43,24 @@ import {
   type FieldCacheEntry,
 } from '@/storage/idb';
 
-// ── Alarm name ────────────────────────────────────────────────────────────────
+// ── Alarm names ───────────────────────────────────────────────────────────────
 
-const SYNC_ALARM = 'ditto_sync';
+const SYNC_ALARM      = 'ditto_sync';
+const KEEPALIVE_ALARM = 'ditto_keepalive';
+
+// ── Alarm setup ───────────────────────────────────────────────────────────────
+// Called on both install/update AND browser startup so alarms are always present.
+// chrome.alarms.create is idempotent when the alarm already exists, but we check
+// first to avoid resetting the next-fire time on every SW wake.
+
+async function ensureAlarms(): Promise<void> {
+  const [sync, keepalive] = await Promise.all([
+    chrome.alarms.get(SYNC_ALARM),
+    chrome.alarms.get(KEEPALIVE_ALARM),
+  ]);
+  if (!sync)      chrome.alarms.create(SYNC_ALARM,      { periodInMinutes: 5 });
+  if (!keepalive) chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
+}
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
@@ -61,13 +76,21 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
     warmUp().catch(() => {});
   }
 
-  // (Re)create the periodic sync alarm on every install/update
-  chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 5 });
+  ensureAlarms().catch(() => {});
+});
+
+// Recreate alarms after a browser restart — onInstalled does not fire then.
+chrome.runtime.onStartup.addListener(() => {
+  ensureAlarms().catch(() => {});
 });
 
 // ── Alarm handler ─────────────────────────────────────────────────────────────
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) {
+    // Waking the SW is the goal — no work needed.
+    return;
+  }
   if (alarm.name === SYNC_ALARM) {
     evictStaleCacheEntries().catch(() => {});
     refreshSessionIfNeeded().catch(() => {});
