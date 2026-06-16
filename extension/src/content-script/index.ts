@@ -769,11 +769,15 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('mouseleave', hide);
   el.addEventListener('blur',       hide);
 
-  // Update-detection — capture the original profile value so tryLearnField
-  // can tell whether the user actually edited the field this focus session.
-  el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
+  // Update-detection — capture the value at focus time so tryLearnField can
+  // tell whether the user actually changed the field during this interaction.
+  // For comboboxes, input.value is empty (react-select manages it internally);
+  // read the display label from the DOM instead so the guard fires correctly.
+  const capturePreFocus = (): string =>
+    isCombobox(el) ? getComboboxDisplayValue(el) : ((el as HTMLInputElement).value ?? '');
+  el.dataset.dittoPreFocusValue = capturePreFocus();
   el.addEventListener('focus', () => {
-    el.dataset.dittoPreFocusValue = (el as HTMLInputElement).value ?? '';
+    el.dataset.dittoPreFocusValue = capturePreFocus();
   });
 
   let updateTimer: ReturnType<typeof setTimeout> | undefined;
@@ -799,7 +803,11 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
 // being saved twice across rapid event fires (blur + change + focusout).
 function tryLearnField(el: HTMLElement): void {
   if (!el.isConnected) return;
-  if (el.dataset.dittoFilled === 'true') return; // we just filled it
+  // NOTE: do NOT guard on dittoFilled here. That marker is preserved on comboboxes
+  // as long as they show a committed value. Blocking on it would permanently prevent
+  // user-initiated dropdown changes from updating the profile after an auto-fill.
+  // The guards below (value === entry.value, dittoLastLearnedValue, preFocus) are
+  // sufficient to prevent spurious re-saves of what the extension just filled.
 
   // STEP 6.5 — Use the full isCombobox() detection from combobox.ts so we
   // don't skip combobox-like elements when focus stays on them after the
