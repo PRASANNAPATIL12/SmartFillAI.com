@@ -10,11 +10,11 @@ sfaLog(
   '| parentOrigin:', (window.top === window) ? '(top)' : (() => { try { return document.referrer; } catch { return 'cross-origin'; } })()
 );
 
-import type { ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature, UserSettings } from '@shared/types';
+import type { DocumentMeta, ProfileEntry, FieldCacheEntry, MatchResult, FieldSignature, UserSettings } from '@shared/types';
 import { STORAGE_KEYS } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
-import { fillElement } from './filler';
+import { fillElement, fillFileInput } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel } from './overlay';
@@ -44,6 +44,7 @@ const matchMap = new Map<HTMLElement, FieldState>();
 let profile: ProfileEntry[] = [];
 let profileLoaded = false;
 let scanTimer: ReturnType<typeof setTimeout> | undefined;
+let documentsMeta: DocumentMeta[] = [];
 let autoSave = true; // default; overwritten after GET_SETTINGS resolves
 
 // ── Banner state ──────────────────────────────────────────────────────────────
@@ -183,6 +184,31 @@ async function loadProfile(): Promise<ProfileEntry[]> {
   return [];
 }
 
+// ── Document metadata loading (mirrors loadProfile pattern) ──────────────────
+const DOCUMENTS_CACHE_KEY = STORAGE_KEYS.DOCUMENTS_META_CACHE;
+
+async function loadDocumentsMeta(): Promise<DocumentMeta[]> {
+  try {
+    const metas = await sendToBackground<DocumentMeta[]>('GET_DOCUMENTS');
+    chrome.storage.local.set({ [DOCUMENTS_CACHE_KEY]: metas }).catch(() => {});
+    sfaLog('documents loaded from background:', metas.length);
+    return metas;
+  } catch {
+    // SW might be asleep — try local cache
+  }
+
+  try {
+    const stored = await chrome.storage.local.get(DOCUMENTS_CACHE_KEY);
+    const cached = stored[DOCUMENTS_CACHE_KEY];
+    if (Array.isArray(cached) && cached.length > 0) {
+      sfaLog('documents loaded from local cache:', cached.length);
+      return cached as DocumentMeta[];
+    }
+  } catch { /* proceed empty */ }
+
+  return [];
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init(): Promise<void> {
@@ -196,6 +222,10 @@ async function init(): Promise<void> {
   // Fetch profile (with SW-sleep fallback) and settings in parallel.
   // loadProfile() already handles its own retry + local-cache fallback,
   // so Promise.allSettled here is just for settings.
+  // CRITICAL PATH: profile + settings. Both are required for ghost text + matching.
+  // Documents are needed only for file fills, NOT for text/select fills or ghost text,
+  // so we load them async after init completes — keeps SW-sleep latency off the
+  // critical path so ghost text appears as quickly as possible after page refresh.
   const [fetchedProfile, fetchedSettings] = await Promise.allSettled([
     loadProfile(),
     sendToBackground<UserSettings>('GET_SETTINGS'),
@@ -206,18 +236,24 @@ async function init(): Promise<void> {
   profile   = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
   autoSave  = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave : true;
 
+  // Background-load documents; re-scan once they arrive so file fields pick up
+  // their docType hints. Ghost text on text/select fields is unaffected.
+  loadDocumentsMeta().then(metas => {
+    documentsMeta = metas;
+    if (metas.length > 0) scanFields().catch(() => {});
+  }).catch(() => { documentsMeta = []; });
+
   profileLoaded = true;
   initOverlay(handlePillFill);
   initLearnOverlay(handleLearnSave);
   initEssayOverlay(handleEssayOpen);
 
-  // When the user scrolls or resizes, ghost overlays drift away from inputs.
-  // Wipe them; the next scan will repaint them in the correct positions.
-  let repositionTimer: ReturnType<typeof setTimeout> | undefined;
+  // When the user scrolls or resizes, ghost overlays must track their inputs.
+  // repositionAllGhosts() now repositions existing ghosts in place instead of
+  // wiping them — fixes the flakiness where the old wipe-then-rescan approach
+  // lost ghosts whenever the rescan got cancelled by ongoing DOM mutations.
   const onReposition = (): void => {
-    clearTimeout(repositionTimer);
     repositionAllGhosts();
-    repositionTimer = setTimeout(() => { scanFields().catch(() => {}); }, 200);
   };
   window.addEventListener('scroll', onReposition, { passive: true });
   window.addEventListener('resize', onReposition);
@@ -240,6 +276,14 @@ async function init(): Promise<void> {
   }
 
   await scanFields();
+  // Safety net: re-scan after page settles. React/Next.js hydration often
+  // replaces nodes after our first scan completes — the MutationObserver catches
+  // most but its 300ms debounce can be cancelled by ongoing mutations. Forced
+  // re-scans at 800ms and 2500ms guarantee ghosts get a chance to render even
+  // if the observer never lands a stable tick during early hydration.
+  setTimeout(() => { scanFields().catch(() => {}); },  800);
+  setTimeout(() => { scanFields().catch(() => {}); }, 2500);
+
   // Steps 5+6 run after deterministic steps — async, never blocks initial render
   runStep5().then(() => runStep6().catch(() => {})).catch(() => {});
 }
@@ -331,7 +375,13 @@ function refreshBanner(): void {
   for (const [el, state] of matchMap) {
     if (state.result.status === 'SKIP') continue;
     totalDetected++;
-    if (state.result.status === 'MATCHED' && state.entry) {
+    if (state.result.status === 'FILE_UPLOAD' && state.result.docType) {
+      const hasDoc = documentsMeta.some(d => d.docType === state.result.docType);
+      if (hasDoc) {
+        matched++;
+        if (el.dataset.dittoFilled !== 'true') unfilled++;
+      }
+    } else if (state.result.status === 'MATCHED' && state.entry) {
       matched++;
       // STEP 6.4 — Comboboxes (react-select etc.) often clear input.value
       // after option click; the chosen label lives in a sibling display.
@@ -709,6 +759,37 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
   }
 
+  // File-fill loop — attach documents to file upload fields
+  for (const [el, state] of matchMap) {
+    if (state.result.status !== 'FILE_UPLOAD' || !state.result.docType) continue;
+    if (!document.contains(el)) continue;
+    if (el.dataset.dittoFilled === 'true') continue;
+
+    const doc = documentsMeta.find(
+      d => d.docType === state.result.docType && d.isDefault
+    ) ?? documentsMeta.find(d => d.docType === state.result.docType);
+
+    if (!doc) continue;
+
+    try {
+      const resp = await sendToBackground<{ base64: string }>(
+        'GET_DOCUMENT_BYTES', { id: doc.id }
+      );
+      if (!resp?.base64) continue;
+
+      const binary = atob(resp.base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+      const ok = fillFileInput(
+        el as HTMLInputElement, bytes.buffer, doc.fileName, doc.mimeType
+      );
+      if (ok) filled++;
+    } catch {
+      // SW unreachable or doc deleted — skip
+    }
+  }
+
   return { filled, skipped };
 }
 
@@ -774,6 +855,13 @@ function applyHint(
       const preview = entry.sensitive ? '•••••' : entry.value;
       showGhost(el, preview);
     }
+  } else if (result.status === 'FILE_UPLOAD') {
+    el.dataset.dittoMatch = 'file';
+    if (result.docType) el.dataset.dittoDocType = result.docType;
+    const doc = documentsMeta.find(
+      d => d.docType === result.docType && d.isDefault
+    ) ?? documentsMeta.find(d => d.docType === result.docType);
+    if (doc) el.dataset.dittoDocName = doc.fileName;
   } else if (result.status === 'ESSAY') {
     el.dataset.dittoMatch = 'essay';
     if (sig) attachEssayPillListeners(el, sig);

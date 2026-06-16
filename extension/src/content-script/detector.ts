@@ -29,6 +29,7 @@ export function extractSignature(
       ? (el as HTMLInputElement).maxLength
       : null,
     surroundingText: resolveSurroundingText(el),
+    accept: el.tagName === 'INPUT' ? (el as HTMLInputElement).accept ?? '' : '',
     element: el,
   };
 }

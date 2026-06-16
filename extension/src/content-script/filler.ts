@@ -118,6 +118,19 @@ export async function fillElement(
   }
 }
 
+export function fillFileInput(
+  el: HTMLInputElement, fileData: ArrayBuffer, fileName: string, mimeType: string
+): boolean {
+  const file = new File([fileData], fileName, { type: mimeType });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  el.files = dt.files;
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dataset.dittoFilled = 'true';
+  return el.files !== null && el.files.length > 0;
+}
+
 function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): boolean {
   const options = Array.from(el.options);
 

@@ -7,9 +7,10 @@ import LoginScreen    from './components/LoginScreen';
 import HomeScreen     from './components/HomeScreen';
 import ProfileScreen  from './components/ProfileScreen';
 import SettingsScreen from './components/SettingsScreen';
-import ResumeScreen   from './components/ResumeScreen';
+import ResumeScreen    from './components/ResumeScreen';
+import DocumentsScreen from './components/DocumentsScreen';
 
-type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings' | 'resume';
+type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings' | 'resume' | 'documents';
 
 interface SessionInfo {
   userId:    string;
@@ -97,6 +98,10 @@ export default function App(): React.ReactElement {
     );
   }
 
+  if (screen === 'documents') {
+    return <DocumentsScreen onBack={() => setScreen('home')} />;
+  }
+
   if (screen === 'settings') {
     return (
       <SettingsScreen
@@ -113,6 +118,7 @@ export default function App(): React.ReactElement {
       session={session}
       onGoProfile={() => setScreen('profile')}
       onGoSettings={() => setScreen('settings')}
+      onGoDocuments={() => setScreen('documents')}
       onGoLogin={() => setScreen('login')}
       onSignOut={handleSignOut}
     />

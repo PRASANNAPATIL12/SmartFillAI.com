@@ -1,20 +1,22 @@
 /**
- * IndexedDB wrapper — two object stores:
+ * IndexedDB wrapper — three object stores:
  *   field_cache  : domain-fingerprint → FieldCacheEntry   (field match cache)
  *   embeddings   : profileEntryId     → Float32Array      (MiniLM vectors)
+ *   documents    : id                 → StoredDocument     (file bytes + metadata)
  *
  * Uses the raw IDBDatabase API (no extra library) because the extension
  * ships no runtime deps beyond the AI SDKs.
  */
 
-import type { FieldCacheEntry } from '@shared/types';
+import type { FieldCacheEntry, DocumentType, StoredDocument, DocumentMeta } from '@shared/types';
 
 export type { FieldCacheEntry };
 
 const DB_NAME = 'ditto_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_FIELD_CACHE = 'field_cache';
 const STORE_EMBEDDINGS  = 'embeddings';
+const STORE_DOCUMENTS   = 'documents';
 
 let _db: IDBDatabase | null = null;
 
@@ -26,20 +28,23 @@ function openDB(): Promise<IDBDatabase> {
 
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result;
+      const oldVersion = e.oldVersion;
 
-      if (!db.objectStoreNames.contains(STORE_FIELD_CACHE)) {
-        const store = db.createObjectStore(STORE_FIELD_CACHE, { keyPath: 'fingerprint' });
-        store.createIndex('lastUsed', 'lastUsed');
+      if (oldVersion < 1) {
+        const fc = db.createObjectStore(STORE_FIELD_CACHE, { keyPath: 'fingerprint' });
+        fc.createIndex('lastUsed', 'lastUsed');
+        db.createObjectStore(STORE_EMBEDDINGS, { keyPath: 'entryId' });
       }
 
-      if (!db.objectStoreNames.contains(STORE_EMBEDDINGS)) {
-        db.createObjectStore(STORE_EMBEDDINGS, { keyPath: 'entryId' });
+      if (oldVersion < 2) {
+        const docs = db.createObjectStore(STORE_DOCUMENTS, { keyPath: 'id' });
+        docs.createIndex('docType', 'docType', { unique: false });
+        docs.createIndex('userId', 'userId', { unique: false });
       }
     };
 
     req.onsuccess = (e) => {
       _db = (e.target as IDBOpenDBRequest).result;
-      // Re-open on unexpected close (e.g. schema change by another tab)
       _db.onclose = () => { _db = null; };
       resolve(_db);
     };
@@ -160,4 +165,51 @@ export async function pruneOrphanEmbeddings(activeIds: Set<string>): Promise<voi
       await idbDelete(STORE_EMBEDDINGS, e.entryId);
     }
   }
+}
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+
+function stripFileData(doc: StoredDocument): DocumentMeta {
+  const { fileData: _, ...meta } = doc;
+  return meta as DocumentMeta;
+}
+
+export async function saveDocument(doc: StoredDocument): Promise<void> {
+  return idbPut(STORE_DOCUMENTS, doc);
+}
+
+export async function getDocumentMeta(id: string): Promise<DocumentMeta | undefined> {
+  const doc = await idbGet<StoredDocument>(STORE_DOCUMENTS, id);
+  return doc ? stripFileData(doc) : undefined;
+}
+
+export async function getDocumentBytes(id: string): Promise<ArrayBuffer | undefined> {
+  const doc = await idbGet<StoredDocument>(STORE_DOCUMENTS, id);
+  return doc?.fileData;
+}
+
+export async function getAllDocumentMetas(): Promise<DocumentMeta[]> {
+  const all = await idbGetAll<StoredDocument>(STORE_DOCUMENTS);
+  return all.map(stripFileData);
+}
+
+export async function getDefaultDocument(docType: DocumentType): Promise<StoredDocument | undefined> {
+  const all = await idbGetAll<StoredDocument>(STORE_DOCUMENTS);
+  return all.find(d => d.docType === docType && d.isDefault)
+      ?? all.find(d => d.docType === docType);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  return idbDelete(STORE_DOCUMENTS, id);
+}
+
+export async function updateDocumentMeta(
+  id: string,
+  patch: Partial<Pick<StoredDocument, 'label' | 'isDefault'>>
+): Promise<DocumentMeta | null> {
+  const doc = await idbGet<StoredDocument>(STORE_DOCUMENTS, id);
+  if (!doc) return null;
+  const updated = { ...doc, ...patch, updatedAt: Date.now() };
+  await idbPut(STORE_DOCUMENTS, updated);
+  return stripFileData(updated);
 }

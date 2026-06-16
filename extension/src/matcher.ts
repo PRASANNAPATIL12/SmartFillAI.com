@@ -11,7 +11,7 @@
  * Pure function: no storage I/O, no API calls, no side effects.
  */
 
-import type { FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry } from '@shared/types';
+import type { DocumentType, FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry } from '@shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -35,9 +35,23 @@ export function matchField(
   const skipReason = shouldSkip(sig);
   if (skipReason) return { status: 'SKIP', reason: skipReason };
 
+  // File upload detection (before cache — file inputs never use the field cache)
+  if (sig.inputType === 'file') return classifyFileField(sig);
+
   // Step 2: Cache lookup
   const cached = cacheMatch(sig, cache, domain);
-  if (cached) return cached;
+  if (cached) {
+    // Validate the cached entry still exists in the current profile.
+    // Resume re-parsing or profile resets generate new entry IDs, leaving
+    // the cache pointing at stale UUIDs. Without this guard, MATCHED status
+    // would carry a stale profileEntryId, profile.find() returns undefined,
+    // and applyHint's `MATCHED && entry` check fails — no ghost text, no pill.
+    if (cached.profileEntryId && profile.some(e => e.id === cached.profileEntryId)) {
+      return cached;
+    }
+    // Stale cache hit — fall through to rule matching so the field gets
+    // re-matched against the current profile entries.
+  }
 
   // Step 3: Essay detection
   if (isEssay(sig)) return { status: 'ESSAY', reason: 'essay field detected', matchStep: 3 };
@@ -70,7 +84,7 @@ export function matchField(
 // Step 1: SKIP
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SKIP_TYPES = new Set(['password', 'hidden', 'file', 'submit', 'button', 'reset', 'image', 'color', 'range']);
+const SKIP_TYPES = new Set(['password', 'hidden', 'submit', 'button', 'reset', 'image', 'color', 'range']);
 
 function shouldSkip(sig: FieldSignature): string | null {
   if (SKIP_TYPES.has(sig.inputType)) return `input type "${sig.inputType}"`;
@@ -398,6 +412,72 @@ function ruleMatch(sig: FieldSignature): RuleMatch | null {
   }
 
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File upload classification
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RESUME_PATTERN = /\bresume\b|\bcv\b|\bcurriculum[-_\s]*vitae\b/i;
+const COVER_LETTER_PATTERN = /\bcover[-_\s]?letter\b|\bmotivation[-_\s]?letter\b|\bletter[-_\s]?of[-_\s]?(motivation|interest|intent)\b/i;
+const IMAGE_ONLY_PATTERN = /^image\//;
+
+function findSectionLabel(el: HTMLElement): string {
+  let node: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 6 && node; depth++) {
+    for (let sib: Element | null = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      const text = sib.textContent?.trim() ?? '';
+      if (text.length > 0 && text.length < 80) return text;
+    }
+    const heading = node.querySelector('h1, h2, h3, h4, h5, h6, legend, strong, [class*="label"]');
+    if (heading && !heading.querySelector('input, textarea, select')) {
+      const text = heading.textContent?.trim() ?? '';
+      if (text.length > 0 && text.length < 80) return text;
+    }
+    node = node.parentElement;
+  }
+  return '';
+}
+
+function classifyFileField(sig: FieldSignature): MatchResult {
+  const combined = combine(sig);
+  const accept = sig.accept ?? '';
+
+  // Image-only inputs (profile photos, avatars) — skip
+  if (accept && IMAGE_ONLY_PATTERN.test(accept) && !(/\.pdf|\.doc/i.test(accept))) {
+    return { status: 'SKIP', reason: 'image-only file input (photo/avatar)' };
+  }
+
+  // Check combined field signals + ancestor section headings
+  const sectionLabel = sig.element ? findSectionLabel(sig.element) : '';
+  const allText = combined + ' ' + sectionLabel;
+
+  let docType: DocumentType | null = null;
+  let confidence = 0;
+  let reason = '';
+
+  // Test cover letter FIRST — "Cover Letter" contains "letter" but not "resume"
+  if (COVER_LETTER_PATTERN.test(allText)) {
+    docType = 'cover_letter';
+    confidence = 0.95;
+    reason = 'file field: cover letter pattern matched';
+  } else if (RESUME_PATTERN.test(allText)) {
+    docType = 'resume';
+    confidence = 0.95;
+    reason = 'file field: resume/CV pattern matched';
+  }
+  // No blind fallback — if we can't tell the type, don't guess
+
+  if (!docType) {
+    return { status: 'UNKNOWN', reason: 'file input with no document-type signal' };
+  }
+
+  return {
+    status: 'FILE_UPLOAD',
+    docType,
+    confidence,
+    reason,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
