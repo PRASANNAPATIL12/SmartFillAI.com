@@ -33,7 +33,7 @@ import {
   type EntryPatch,
 } from './profile-store';
 import { getSettings, updateSettings } from './settings-store';
-import { computeEmbedding, warmUp } from '@/ml/embedder';
+import { computeEmbedding, cosineSimilarity, warmUp } from '@/ml/embedder';
 import { entryEmbedText, matchByEmbedding } from '@/ml/step5';
 import {
   setEmbedding,
@@ -269,6 +269,51 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       }
     }
     return { computed, total: entries.length };
+  },
+
+  /**
+   * Phase A.4 — semantic option selection for dropdowns whose options don't
+   * match any alias / exact text. Embeds the user value and every option,
+   * returns the closest above threshold.
+   *
+   * Called by fillSelect / fillCombobox / fillButtonDropdown as a fallback
+   * AFTER deterministic alias matching fails. Cost is bounded: only fires
+   * when alias/exact match returns nothing, and we skip very large lists
+   * (the content-script caller gates on optionTexts.length).
+   *
+   * Returns null when no option clears the threshold; the caller then marks
+   * the field FILL_FAILED so the user sees visible feedback.
+   */
+  EMBED_OPTION_MATCH: async (payload) => {
+    const { userValue, optionTexts, threshold = 0.65 } = payload as {
+      userValue: string;
+      optionTexts: string[];
+      threshold?: number;
+    };
+    if (!userValue || !Array.isArray(optionTexts) || optionTexts.length === 0) return null;
+
+    try {
+      const userVec = await computeEmbedding(userValue);
+      let bestIdx = -1;
+      let bestSim = -1;
+      for (let i = 0; i < optionTexts.length; i++) {
+        const optText = optionTexts[i];
+        if (!optText || typeof optText !== 'string') continue;
+        const optVec = await computeEmbedding(optText);
+        const sim = cosineSimilarity(userVec, optVec);
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx < 0 || bestSim < threshold) return null;
+      return { index: bestIdx, similarity: bestSim, optionText: optionTexts[bestIdx] };
+    } catch (err) {
+      // Model not loaded yet, or inference failed. Return null so caller
+      // falls back to FILL_FAILED rather than crashing the fill loop.
+      console.warn('[SmartFillAI] EMBED_OPTION_MATCH failed:', err);
+      return null;
+    }
   },
 
   // ── Deferred stubs (Tasks 4–8) ─────────────────────────────────────────────

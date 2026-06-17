@@ -16,6 +16,7 @@
 import { isCombobox, fillCombobox, fillButtonDropdown } from './combobox';
 import { expandCountryAliases } from './country-aliases';
 import { expandValueAliases, hasValueAliases } from './value-aliases';
+import { selectOptionByEmbedding } from './option-embedding';
 
 // Capture native setters from the extension's isolated world.
 // Page scripts cannot touch these because isolated worlds have separate prototypes.
@@ -73,7 +74,7 @@ export async function fillElement(
     }
 
     if (el instanceof HTMLSelectElement) {
-      return fillSelect(el, value, canonicalKey);
+      return await fillSelect(el, value, canonicalKey);
     }
 
     // ARIA combobox / custom dropdown — needs the type-then-click recipe
@@ -240,7 +241,7 @@ function fillDropzone(el: HTMLElement, file: File): boolean {
   return dropAccepted || !!innerInput;
 }
 
-function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): boolean {
+async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): Promise<boolean> {
   const options = Array.from(el.options);
 
   // Expand the profile value to every alias the option text might use:
@@ -284,9 +285,46 @@ function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string)
       else el.value = target.value;
       el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
       el.dataset.dittoFilled = 'true';
+      delete el.dataset.dittoStatus; // clear any prior FILL_FAILED
       return true;
     }
   }
 
+  // Phase A.4 — embedding fallback. When alias/exact/partial all fail, ask
+  // the local MiniLM embedder which option is semantically closest to the
+  // user's profile value. Skipped for huge option lists (country pickers
+  // handled by the alias table) inside selectOptionByEmbedding itself.
+  const optionTexts = options.map(o => o.text);
+  const match = await selectOptionByEmbedding(el, value, optionTexts);
+  if (match) {
+    const target = options[match.index];
+    if (target) {
+      if (nativeSelectSetter) nativeSelectSetter.call(el, target.value);
+      else el.value = target.value;
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+      el.dataset.dittoFilled = 'true';
+      delete el.dataset.dittoStatus;
+      if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true) {
+        console.log('[SmartFillAI] select fill via embedding', {
+          value,
+          picked: target.text,
+          similarity: match.similarity.toFixed(3),
+        });
+      }
+      return true;
+    }
+  }
+
+  // No alias / containment / exact-value / embedding matched any option.
+  // Mark visibly so user / regression tests can see we didn't fake a fill.
+  el.dataset.dittoStatus = 'FILL_FAILED';
+  if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true) {
+    console.log('[SmartFillAI] select fill failed', {
+      value,
+      canonicalKey,
+      optionsSample: options.slice(0, 12).map(o => o.text),
+      optionCount: options.length,
+    });
+  }
   return false;
 }

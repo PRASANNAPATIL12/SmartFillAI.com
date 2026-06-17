@@ -30,8 +30,75 @@ export function extractSignature(
       : null,
     surroundingText: resolveSurroundingText(el),
     accept: el.tagName === 'INPUT' ? (el as HTMLInputElement).accept ?? '' : '',
+    options: gatherDropdownOptions(el),
     element: el,
   };
+}
+
+/**
+ * Best-effort discovery of a dropdown's option texts. Used by matcher's
+ * `classifyByOptionSet()` to override regex classification when the option
+ * set is more decisive than the label.
+ *
+ * Sources tried, in order:
+ *   1. Native `<select>` — `el.options[i].text` (always works).
+ *   2. `aria-controls` → element by id → `[role="option"]` text (catches
+ *      pre-rendered ARIA listboxes, e.g. Greenhouse / Workday / many MUI).
+ *   3. `aria-owns` → same pattern as aria-controls.
+ *   4. Sibling listbox: a visible `[role="listbox"]` in the same form-row
+ *      container (up to 3 ancestors). Catches HeadlessUI's pattern.
+ *
+ * Capped at 500 options to avoid pathological pages.
+ * Returns `undefined` when no options are discoverable (the listbox lazy-
+ * mounts on click). The fill path will re-read at click-time for those.
+ */
+function gatherDropdownOptions(el: HTMLElement): string[] | undefined {
+  // 1. Native <select>
+  if (el instanceof HTMLSelectElement) {
+    const opts = Array.from(el.options)
+      .map(o => (o.text ?? '').trim())
+      .filter(Boolean);
+    return opts.length > 0 ? opts.slice(0, 500) : undefined;
+  }
+
+  // 2. aria-controls
+  const controlsId = el.getAttribute('aria-controls');
+  if (controlsId) {
+    const lb = document.getElementById(controlsId);
+    if (lb) {
+      const opts = readListboxOptions(lb);
+      if (opts.length > 0) return opts.slice(0, 500);
+    }
+  }
+
+  // 3. aria-owns (alternative pattern)
+  const ownsId = el.getAttribute('aria-owns');
+  if (ownsId) {
+    const lb = document.getElementById(ownsId);
+    if (lb) {
+      const opts = readListboxOptions(lb);
+      if (opts.length > 0) return opts.slice(0, 500);
+    }
+  }
+
+  // 4. Sibling listbox in the same form-row container
+  let container: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 3 && container; depth++) {
+    const lb = container.querySelector<HTMLElement>('[role="listbox"]');
+    if (lb && lb !== el && isVisible(lb)) {
+      const opts = readListboxOptions(lb);
+      if (opts.length > 0) return opts.slice(0, 500);
+    }
+    container = container.parentElement;
+  }
+
+  return undefined;
+}
+
+function readListboxOptions(lb: Element): string[] {
+  return Array.from(lb.querySelectorAll<HTMLElement>('[role="option"], li[role="option"]'))
+    .map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim())
+    .filter(t => t.length > 0 && t.length < 200);
 }
 
 /**

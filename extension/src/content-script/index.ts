@@ -29,6 +29,7 @@ import {
 import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue } from './combobox';
 import { resolveCountry } from './country-aliases';
+import { validateLearnedValue } from './value-validation';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -975,6 +976,14 @@ function tryLearnField(el: HTMLElement): void {
   if (state.result.status === 'UNKNOWN') {
     if (el.dataset.dittoLastLearnedValue === value) return; // already tried
     el.dataset.dittoLastLearnedValue = value;
+    // Universal sanity check at LEARN time. Canonical_key isn't known yet
+    // (background will infer it), so we use the canonical-less validator
+    // which catches the "entire option list captured as value" bug
+    // (length > 200, multi-newline, multiple "+NN" runs).
+    if (!validateLearnedValue(undefined, value)) {
+      sfaLog('learn rejected: bad value shape', value.slice(0, 80));
+      return;
+    }
     if (autoSave) {
       sfaLog('learn:', state.sig.label || state.sig.name || state.sig.id, '=', value);
       doLearnField(el, state.sig, value).catch(() => {});
@@ -995,6 +1004,13 @@ function tryLearnField(el: HTMLElement): void {
     const preFocus = (el.dataset.dittoPreFocusValue ?? '').trim();
     if (preFocus && normalizedValue === normalizeLearnedValue(preFocus, state.entry.canonical_key)) return;
     if (el.dataset.dittoLastLearnedValue === normalizedValue) return;
+    // Canonical-specific validation at UPDATE time. We know the canonical_key
+    // for sure here, so we apply the stricter shape rule (e.g. phone_country_code
+    // must match /^\+?\d{1,4}$/, rejecting "243839891002" outright).
+    if (!validateLearnedValue(state.entry.canonical_key, normalizedValue)) {
+      sfaLog('update rejected: bad value shape for', state.entry.canonical_key, '→', normalizedValue.slice(0, 80));
+      return;
+    }
     el.dataset.dittoLastLearnedValue = normalizedValue;
     if (autoSave) {
       sfaLog('update:', state.entry.display_label, '→', normalizedValue);

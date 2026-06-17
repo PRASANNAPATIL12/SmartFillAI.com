@@ -87,6 +87,19 @@ export interface FieldSignature {
   /** accept attribute for file inputs (e.g. ".pdf,.doc,.docx") */
   accept?: string;
 
+  /**
+   * Visible option texts when the field is a dropdown — native <select>,
+   * ARIA combobox, or button-triggered listbox. Populated by detector.ts
+   * (best-effort: native selects always; combobox/button-dropdown only when
+   * their listbox is already rendered in the DOM).
+   *
+   * Used by matcher.ts `classifyByOptionSet()` to override regex-based
+   * classification when the option set is more semantically decisive than
+   * the label — e.g. a [Yes, No] option set means yes_no/work_authorization
+   * even if the label literally contains the word "country".
+   */
+  options?: string[];
+
   /** DOM element reference (not serializable, only in content script) */
   element?: HTMLElement;
 }
@@ -341,6 +354,7 @@ export type MessageType =
   // ML / Step 5
   | 'STEP5_MATCH'
   | 'COMPUTE_EMBEDDINGS'
+  | 'EMBED_OPTION_MATCH'
   // Auth (Task 6.1)
   | 'SIGN_IN'
   | 'SIGN_OUT'

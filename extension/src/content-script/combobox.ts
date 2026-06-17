@@ -16,6 +16,26 @@
 
 import { expandCountryAliases } from './country-aliases';
 import { expandValueAliases, hasValueAliases } from './value-aliases';
+import { selectOptionByEmbedding } from './option-embedding';
+
+// Debug logger — mirrors index.ts's SFA_DEBUG gate so combobox failures
+// stay silent for users unless they opt in via window.__SFA_DEBUG = true.
+const sfaLog = (...args: unknown[]): void => {
+  if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true) {
+    console.log('[SmartFillAI]', ...args);
+  }
+};
+
+/**
+ * Mark a combobox/button-dropdown control as having failed to find a
+ * matching option. Visible via `[data-ditto-status="FILL_FAILED"]` so the
+ * popup / overlay can surface a "needs manual selection" indicator and
+ * regression tests can assert on it.
+ */
+function markFillFailed(el: HTMLElement, value: string, optionTexts: string[]): void {
+  el.dataset.dittoStatus = 'FILL_FAILED';
+  sfaLog('dropdown fill failed', { value, optionsSample: optionTexts.slice(0, 12), optionCount: optionTexts.length });
+}
 
 // ── Detection ────────────────────────────────────────────────────────────────
 
@@ -386,7 +406,30 @@ export async function fillCombobox(
     }
   }
 
-  // ── 6. Keyboard fallback ──────────────────────────────────────────────────
+  // ── 6. Embedding fallback (Phase A.4) ─────────────────────────────────────
+  // The deterministic alias paths (primary unfiltered + secondary filtered)
+  // have both failed. Before resorting to "ArrowDown + Enter" (which blindly
+  // picks the first option), ask the local MiniLM embedder which currently-
+  // visible option is closest in meaning to the user value.
+  //
+  // We re-fetch the listbox + options here because step 5's typing may have
+  // re-rendered the DOM. Embedding is skipped automatically inside the
+  // helper for option sets > 50 (country pickers and similar).
+  const embedListbox = findListbox(el);
+  if (embedListbox) {
+    const embedOpts = getOptions(embedListbox);
+    if (embedOpts.length > 0) {
+      const embedTexts = embedOpts.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
+      const match = await selectOptionByEmbedding(el, value, embedTexts);
+      if (match && match.index >= 0 && match.index < embedOpts.length) {
+        sfaLog('combobox fill via embedding', { value, picked: embedTexts[match.index], similarity: match.similarity.toFixed(3) });
+        const ok = await clickOption(el, embedOpts[match.index], embedListbox);
+        if (ok) { markFilled(el); return true; }
+      }
+    }
+  }
+
+  // ── 7. Keyboard fallback ──────────────────────────────────────────────────
   // Last resort: navigate to first option with ArrowDown and commit with Enter.
   dispatchKey(el, 'ArrowDown');
   await sleep(60);
@@ -394,8 +437,14 @@ export async function fillCombobox(
   await sleep(100);
 
   const committed = getComboboxDisplayValue(el).length > 0;
-  if (committed) markFilled(el);
-  return committed;
+  if (committed) { markFilled(el); return true; }
+
+  // Every path exhausted. Snapshot whatever options were visible so the
+  // failure log is actionable, then mark the field FILL_FAILED.
+  const finalListbox = findListbox(el);
+  const finalOptions = finalListbox ? getOptions(finalListbox).map(o => (o.textContent ?? '').trim()) : [];
+  markFillFailed(el, value, finalOptions);
+  return false;
 }
 
 /**
@@ -463,15 +512,35 @@ export async function fillButtonDropdown(
     if (visibleUl) { panel = visibleUl; break; }
   }
 
-  if (!panel) return false;
+  if (!panel) {
+    markFillFailed(el, value, []);
+    return false;
+  }
 
   // ── 3. Find matching option ─────────────────────────────────────────────
   const options = Array.from(
     panel.querySelectorAll<HTMLElement>('[role="option"], li, [data-option]')
   ).filter(o => o.offsetParent !== null);
 
-  const pick = options.find(o => optionMatches(o, aliases));
-  if (!pick) return false;
+  const optionTexts = options.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+  let pick = options.find(o => optionMatches(o, aliases));
+
+  // Phase A.4 — embedding fallback when alias matching returns nothing.
+  // Skipped automatically inside selectOptionByEmbedding for very large
+  // option sets (country pickers are alias-covered already).
+  if (!pick) {
+    const match = await selectOptionByEmbedding(el, value, optionTexts);
+    if (match && match.index >= 0 && match.index < options.length) {
+      pick = options[match.index];
+      sfaLog('button-dropdown fill via embedding', { value, picked: optionTexts[match.index], similarity: match.similarity.toFixed(3) });
+    }
+  }
+
+  if (!pick) {
+    markFillFailed(el, value, optionTexts);
+    return false;
+  }
 
   // ── 4. Click the option and verify ─────────────────────────────────────
   const beforeText = el.textContent?.trim() ?? '';
@@ -487,8 +556,10 @@ export async function fillButtonDropdown(
 
   if (panelClosed || textChanged) {
     el.dataset.dittoFilled = 'true';
+    delete el.dataset.dittoStatus; // clear any prior FILL_FAILED
     return true;
   }
 
+  markFillFailed(el, value, optionTexts);
   return false;
 }

@@ -12,6 +12,23 @@
  */
 
 import type { DocumentType, FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry } from '@shared/types';
+import { resolveCountry } from './content-script/country-aliases';
+import { expandValueAliases, hasValueAliases } from './content-script/value-aliases';
+import { validateLearnedValue } from './content-script/value-validation';
+
+/**
+ * Find a profile entry for the given canonical_key AND validate its value
+ * passes the shape check. Pre-existing bad values from older sessions (e.g.
+ * `phone_country_code = "243839891002"`) would otherwise still get applied
+ * to forms. By treating invalid entries as missing, we degrade gracefully:
+ * the field stays UNKNOWN and the user can re-learn it cleanly.
+ */
+function findValidEntry(profile: ProfileEntry[], canonicalKey: string): ProfileEntry | undefined {
+  const entry = profile.find(p => p.canonical_key === canonicalKey);
+  if (!entry) return undefined;
+  if (!validateLearnedValue(canonicalKey, entry.value)) return undefined;
+  return entry;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -38,19 +55,30 @@ export function matchField(
   // File upload detection (before cache — file inputs never use the field cache)
   if (sig.inputType === 'file') return classifyFileField(sig);
 
+  // Step 1.5: Option-set awareness — when the dropdown's visible options are
+  // semantically decisive (only [Yes, No]; 200 country names; gender aliases;
+  // degree aliases; etc.), force the canonical_key from the option set
+  // INSTEAD of trusting potentially-misleading label regex matches. This
+  // runs before cache because the cache may itself carry a past mis-match
+  // (e.g. yes/no field cached as country because label contained "country").
+  const optionSetMatch = classifyByOptionSet(sig, profile);
+  if (optionSetMatch) return optionSetMatch;
+
   // Step 2: Cache lookup
   const cached = cacheMatch(sig, cache, domain);
   if (cached) {
-    // Validate the cached entry still exists in the current profile.
-    // Resume re-parsing or profile resets generate new entry IDs, leaving
-    // the cache pointing at stale UUIDs. Without this guard, MATCHED status
-    // would carry a stale profileEntryId, profile.find() returns undefined,
-    // and applyHint's `MATCHED && entry` check fails — no ghost text, no pill.
-    if (cached.profileEntryId && profile.some(e => e.id === cached.profileEntryId)) {
-      return cached;
+    // Validate the cached entry still exists AND its value is structurally
+    // sane. Resume re-parsing or profile resets generate new entry IDs;
+    // older sessions may have learned corrupted values (e.g. an entire
+    // option-list textContent captured as a phone_country_code). Both
+    // cases fall through here so the field gets re-matched cleanly.
+    if (cached.profileEntryId) {
+      const entry = profile.find(e => e.id === cached.profileEntryId);
+      if (entry && validateLearnedValue(entry.canonical_key, entry.value)) {
+        return cached;
+      }
     }
-    // Stale cache hit — fall through to rule matching so the field gets
-    // re-matched against the current profile entries.
+    // Stale or invalid cache hit — fall through to rule matching.
   }
 
   // Step 3: Essay detection
@@ -59,7 +87,7 @@ export function matchField(
   // Step 4: Deterministic rules
   const rule = ruleMatch(sig);
   if (rule) {
-    const entry = profile.find(p => p.canonical_key === rule.canonical);
+    const entry = findValidEntry(profile, rule.canonical);
     if (entry) {
       return {
         status: 'MATCHED',
@@ -69,10 +97,12 @@ export function matchField(
         matchStep: 4,
       };
     }
-    // We know what it IS, but the user hasn't filled that profile entry yet
+    // We know what it IS, but the user hasn't filled that profile entry
+    // yet, OR the stored entry's value failed shape validation. Either
+    // way, treat as UNKNOWN so the user can learn it cleanly.
     return {
       status: 'UNKNOWN',
-      reason: `rule matched canonical "${rule.canonical}" but no profile entry exists`,
+      reason: `rule matched canonical "${rule.canonical}" but no valid profile entry exists`,
       matchStep: 4,
     };
   }
@@ -419,6 +449,117 @@ function ruleMatch(sig: FieldSignature): RuleMatch | null {
   }
 
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 1.5: Option-set classification
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The label is the primary signal in Step 4 rules, but it can be misleading:
+//   "Are you legally authorized to work in the country..."  ← contains "country"
+//                                                              but is yes/no
+// The dropdown's option set is a more reliable signal in these cases. When
+// the option list is decisive — only [Yes, No]; 200 country names; degree
+// aliases; etc. — force the canonical_key from the options.
+//
+// Sources: sig.options is populated by detector.ts for native <select> and
+// for ARIA listboxes that are already in the DOM. For widgets that lazy-
+// mount their panel on click, sig.options is undefined and this step bails;
+// rules + Step 6 LLM verification (Phase B) cover those.
+
+/** Categorical canonical_keys whose value-aliases tables are dense enough to use for option-set classification. */
+const OPTION_SET_KEYS = ['gender', 'degree', 'education_level', 'employment_type', 'work_authorization'] as const;
+
+function classifyByOptionSet(sig: FieldSignature, profile: ProfileEntry[]): MatchResult | null {
+  const opts = sig.options;
+  if (!opts || opts.length === 0) return null;
+
+  const trimmedLower = opts
+    .map(o => o.trim().toLowerCase())
+    .filter(o => o.length > 0);
+  if (trimmedLower.length === 0) return null;
+
+  const combined = combine(sig).toLowerCase();
+
+  // ── (a) Yes/No detection ───────────────────────────────────────────────
+  // Exactly 2 options, both literal "yes"/"no". Disambiguate yes_no vs.
+  // work_authorization by looking for work-context keywords in the label.
+  if (
+    trimmedLower.length === 2 &&
+    trimmedLower.every(o => o === 'yes' || o === 'no') &&
+    new Set(trimmedLower).size === 2
+  ) {
+    const isWorkAuth = /\b(work|authoriz|eligible|visa|sponsor|legal(ly)?)\b/.test(combined);
+    const canonical = isWorkAuth ? 'work_authorization' : 'yes_no';
+    return finalizeOptionSetMatch(canonical, profile, `option-set: Yes/No${isWorkAuth ? ' + work context' : ''}`);
+  }
+
+  // ── (b) Country picker ─────────────────────────────────────────────────
+  // 50+ options where ≥ 70% resolve to known countries.
+  if (opts.length >= 50) {
+    let countryHits = 0;
+    for (const o of opts) {
+      if (resolveCountry(o)) countryHits++;
+    }
+    if (countryHits / opts.length >= 0.7) {
+      const isCallingCode = sig.inputType === 'tel' || /phone|dial|calling[- ]?code/.test(combined);
+      const canonical = isCallingCode ? 'phone_country_code' : 'country';
+      return finalizeOptionSetMatch(canonical, profile, `option-set: ${countryHits}/${opts.length} country names`);
+    }
+  }
+
+  // ── (c) Categorical alias-table hit ───────────────────────────────────
+  // For each aliased canonical_key (gender, degree, etc.), count how many
+  // options match at least one alias for that key. The key with the highest
+  // hit ratio ≥ 0.5 wins.
+  let bestKey: string | null = null;
+  let bestRatio = 0;
+  for (const key of OPTION_SET_KEYS) {
+    if (!hasValueAliases(key)) continue;
+    let hits = 0;
+    for (const o of opts) {
+      // expandValueAliases returns [value] for unrecognized inputs and a
+      // longer alias array for recognized ones. length > 1 means the option
+      // matched a known group for this key.
+      if (expandValueAliases(key, o).length > 1) hits++;
+    }
+    const ratio = hits / opts.length;
+    if (ratio > bestRatio && ratio >= 0.5) {
+      bestRatio = ratio;
+      bestKey = key;
+    }
+  }
+  if (bestKey) {
+    return finalizeOptionSetMatch(
+      bestKey,
+      profile,
+      `option-set: ${Math.round(bestRatio * 100)}% match alias table for "${bestKey}"`
+    );
+  }
+
+  return null;
+}
+
+function finalizeOptionSetMatch(
+  canonical: string,
+  profile: ProfileEntry[],
+  reason: string
+): MatchResult {
+  const entry = findValidEntry(profile, canonical);
+  if (entry) {
+    return {
+      status: 'MATCHED',
+      profileEntryId: entry.id,
+      confidence: 0.95,
+      reason,
+      matchStep: 0,
+    };
+  }
+  return {
+    status: 'UNKNOWN',
+    reason: `${reason} but no valid profile entry for "${canonical}"`,
+    matchStep: 0,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
