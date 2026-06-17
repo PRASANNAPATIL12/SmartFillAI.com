@@ -145,12 +145,40 @@ export function fillFileInput(
     return fillDropzone(el, file);
   }
 
-  // Native input path
+  // Native input path — set files via DataTransfer, then dispatch a
+  // comprehensive event sequence. Different frameworks listen for different
+  // event types, and Angular Material in particular sometimes only updates
+  // its UI when a full focus-change-blur cycle (or a drop event) fires:
+  //
+  //   • change    — standard listener for (change)="..." bindings
+  //   • input     — some libraries listen here instead of change
+  //   • drop      — Angular Material file directives often accept files via
+  //                  drop AS WELL AS change; firing it covers drag-drop libs
+  //   • focus/blur — forces Angular zone tick and FormControl statusChanges
+  //
+  // composed:true ensures the event crosses shadow-DOM boundaries (Angular
+  // Material wraps controls in <span class="mdc-button__label">).
   const dt = new DataTransfer();
   dt.items.add(file);
   el.files = dt.files;
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+
+  el.dispatchEvent(new Event('focus',  { bubbles: true, composed: true }));
+  el.dispatchEvent(new Event('input',  { bubbles: true, composed: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+  // Synthetic drop — many Angular Material file inputs (and react-dropzone)
+  // accept files via drop as a parallel code path. Firing it gives the
+  // framework a second chance to pick up the file even if change was ignored.
+  try {
+    const dropDT = new DataTransfer();
+    dropDT.items.add(file);
+    el.dispatchEvent(new DragEvent('drop', {
+      bubbles: true, composed: true, cancelable: true, dataTransfer: dropDT,
+    }));
+  } catch { /* older browsers may not support DragEvent constructor with dataTransfer */ }
+
+  el.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+
   el.dataset.dittoFilled = 'true';
   return el.files !== null && el.files.length > 0;
 }
