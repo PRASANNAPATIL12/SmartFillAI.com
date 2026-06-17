@@ -15,6 +15,7 @@
 
 import { isCombobox, fillCombobox, fillButtonDropdown } from './combobox';
 import { expandCountryAliases } from './country-aliases';
+import { expandValueAliases, hasValueAliases } from './value-aliases';
 
 // Capture native setters from the extension's isolated world.
 // Page scripts cannot touch these because isolated worlds have separate prototypes.
@@ -242,11 +243,18 @@ function fillDropzone(el: HTMLElement, file: File): boolean {
 function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): boolean {
   const options = Array.from(el.options);
 
-  // For country-related fields expand to all aliases so "India" matches
-  // option text "🇮🇳 India +91", "+91", "IN", etc.
-  const valuesToTry = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
-    ? expandCountryAliases(value)
-    : [value];
+  // Expand the profile value to every alias the option text might use:
+  //   • country / phone_country_code → "India" expands via country table
+  //   • gender / degree / work_authorization / employment_type / yes_no /
+  //     years_of_experience / education_level → value-aliases.ts
+  //   • anything else → [value] (existing behavior — option text must match
+  //     verbatim, which is fine for first_name, city, etc.)
+  const valuesToTry =
+    canonicalKey === 'country' || canonicalKey === 'phone_country_code'
+      ? expandCountryAliases(value)
+      : hasValueAliases(canonicalKey)
+        ? expandValueAliases(canonicalKey, value)
+        : [value];
 
   for (const tryValue of valuesToTry) {
     const lv = tryValue.toLowerCase().trim();

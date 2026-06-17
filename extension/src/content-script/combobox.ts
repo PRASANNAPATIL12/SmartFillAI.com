@@ -15,6 +15,7 @@
  */
 
 import { expandCountryAliases } from './country-aliases';
+import { expandValueAliases, hasValueAliases } from './value-aliases';
 
 // ── Detection ────────────────────────────────────────────────────────────────
 
@@ -315,9 +316,12 @@ export async function fillCombobox(
   // react-select), but the dropdown can still be opened and options clicked.
   // We do NOT bail here — we skip the writeValue step below if readOnly.
 
-  const aliases = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
-    ? expandCountryAliases(value)
-    : [value];
+  const aliases =
+    canonicalKey === 'country' || canonicalKey === 'phone_country_code'
+      ? expandCountryAliases(value)
+      : hasValueAliases(canonicalKey)
+        ? expandValueAliases(canonicalKey, value)
+        : [value];
 
   // ── 1. Focus the input ────────────────────────────────────────────────────
   el.focus();
@@ -413,9 +417,12 @@ export async function fillButtonDropdown(
   value: string,
   canonicalKey?: string
 ): Promise<boolean> {
-  const aliases = (canonicalKey === 'country' || canonicalKey === 'phone_country_code')
-    ? expandCountryAliases(value)
-    : [value];
+  const aliases =
+    canonicalKey === 'country' || canonicalKey === 'phone_country_code'
+      ? expandCountryAliases(value)
+      : hasValueAliases(canonicalKey)
+        ? expandValueAliases(canonicalKey, value)
+        : [value];
 
   // ── 1. Click the trigger to open the panel ───────────────────────────────
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
