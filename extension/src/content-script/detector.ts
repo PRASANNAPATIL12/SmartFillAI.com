@@ -192,6 +192,45 @@ function findFileInputAnchor(input: HTMLInputElement): HTMLElement | null {
   return null;
 }
 
+/**
+ * Walk up to 8 ancestor levels gathering text content (excluding nested
+ * form fields). Used to enrich the surroundingText of a hidden file input
+ * so classifyFileField can find "Upload Resume" labels that live outside
+ * the input's immediate parent.
+ *
+ * Early-terminates when we hit a level whose text already contains
+ * resume/cv/cover-letter — prevents contamination from form-wide text
+ * on pages with multiple file uploads where both labels would otherwise
+ * appear in every input's surroundingText.
+ */
+const DOC_SIGNAL_PATTERN = /\bresume\b|\bcv\b|curriculum[-_\s]*vitae|cover[-_\s]?letter|motivation[-_\s]?letter/i;
+
+function gatherAncestorText(input: HTMLElement, maxDepth = 8): string {
+  const parts: string[] = [];
+  let node: HTMLElement | null = input.parentElement;
+
+  for (let depth = 0; depth < maxDepth && node; depth++) {
+    if (node.tagName === 'BODY') break;
+
+    const clone = node.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('input, textarea, select, script, style').forEach(n => n.remove());
+    const text = (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+    if (text && !parts.some(p => p.includes(text) || text.includes(p))) {
+      parts.push(text.slice(0, 250));
+    }
+
+    // Early-terminate: this level already provides the doc-type signal.
+    // Walking further up risks pulling in the sibling row's "Cover Letter"
+    // label and contaminating a resume input (or vice versa).
+    if (text && DOC_SIGNAL_PATTERN.test(text)) break;
+
+    node = node.parentElement;
+  }
+
+  return parts.join(' ').slice(0, 700);
+}
+
 function extractFileInputs(
   root: Document | Element,
   seen: Set<HTMLElement>
@@ -203,22 +242,30 @@ function extractFileInputs(
     if (seen.has(input)) continue;            // already returned by primary pass
     if (!input.isConnected) continue;
 
-    const anchor = findFileInputAnchor(input);
-    if (!anchor) continue;                     // truly unreachable — leave it
-
     const sig = extractSignature(input);
 
-    // Enrich surroundingText with the anchor's textContent + class hints so
-    // classifyFileField() in matcher.ts can pick up the visible label even
-    // when it lives on a sibling element of the hidden input.
-    const anchorText  = (anchor.textContent ?? '').trim();
-    const anchorAria  = anchor.getAttribute('aria-label')?.trim() ?? '';
-    const anchorClass = anchor.getAttribute('class') ?? '';
-    sig.surroundingText = [sig.surroundingText, anchorText, anchorAria, anchorClass]
+    // ALWAYS include hidden file inputs — classifyFileField + findSectionLabel
+    // in matcher.ts already require explicit resume/cv/cover-letter text to
+    // classify as FILE_UPLOAD, so unrelated hidden inputs (image uploads,
+    // honeypots) stay UNKNOWN and never get filled. This is more reliable
+    // than gating on anchor visibility, which is brittle for custom HR
+    // portals where the trigger button might be a <div> or far from the input.
+    //
+    // Enrich surroundingText with:
+    //   1) The anchor button/label text if findable
+    //   2) Ancestor text walked up 6 levels (catches "Upload Resume*" labels
+    //      placed several wrappers away from the hidden input)
+    const anchor = findFileInputAnchor(input);
+    const anchorText  = anchor ? (anchor.textContent ?? '').trim() : '';
+    const anchorAria  = anchor ? (anchor.getAttribute('aria-label') ?? '').trim() : '';
+    const anchorClass = anchor ? (anchor.getAttribute('class') ?? '') : '';
+    const ancestorText = isVisible(input) ? '' : gatherAncestorText(input);
+
+    sig.surroundingText = [sig.surroundingText, anchorText, anchorAria, anchorClass, ancestorText]
       .filter(Boolean)
       .join(' ')
       .replace(/\s+/g, ' ')
-      .slice(0, 500);
+      .slice(0, 800);
 
     seen.add(input);
     results.push(sig);
