@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { AIProviderName } from '@/ai-providers';
-import { getProviderConfig, getAPIKey } from '@/ai-providers';
+import { getProviderConfig } from '@/ai-providers';
 import { sendToBackground } from './utils/messages';
-import SetupScreen    from './components/SetupScreen';
 import LoginScreen    from './components/LoginScreen';
 import HomeScreen     from './components/HomeScreen';
 import ProfileScreen  from './components/ProfileScreen';
@@ -10,7 +9,7 @@ import SettingsScreen from './components/SettingsScreen';
 import ResumeScreen    from './components/ResumeScreen';
 import DocumentsScreen from './components/DocumentsScreen';
 
-type Screen = 'loading' | 'setup' | 'login' | 'home' | 'profile' | 'settings' | 'resume' | 'documents';
+type Screen = 'loading' | 'login' | 'home' | 'profile' | 'settings' | 'resume' | 'documents';
 
 interface SessionInfo {
   userId:    string;
@@ -20,32 +19,28 @@ interface SessionInfo {
 
 export default function App(): React.ReactElement {
   const [screen,   setScreen]   = useState<Screen>('loading');
-  const [provider, setProvider] = useState<AIProviderName>('groq');
+  const [provider, setProvider] = useState<AIProviderName>('gemini');
   const [session,  setSession]  = useState<SessionInfo | null>(null);
 
   useEffect(() => {
     async function bootstrap(): Promise<void> {
+      // AI key is bundled at build time — there's no setup/key-entry step.
+      // Go straight to home; just read the provider for the header badge and
+      // check for an optional cloud session.
       try {
         const cfg = await getProviderConfig();
         setProvider(cfg.provider);
-        const key = await getAPIKey(cfg.provider);
-        if (!key) { setScreen('setup'); return; }
+      } catch { /* fall back to default provider badge */ }
 
-        // Check cloud session (optional — app works without it)
+      try {
         const s = await sendToBackground<SessionInfo | null>('GET_SESSION');
         setSession(s);
-        setScreen('home');
-      } catch {
-        setScreen('setup');
-      }
+      } catch { /* app works without a session */ }
+
+      setScreen('home');
     }
     bootstrap();
   }, []);
-
-  function handleSetupDone(p: AIProviderName): void {
-    setProvider(p);
-    setScreen('home');
-  }
 
   function handleLoginSuccess(email: string): void {
     sendToBackground<SessionInfo | null>('GET_SESSION').then(s => setSession(s)).catch(() => {});
@@ -65,10 +60,6 @@ export default function App(): React.ReactElement {
         <div className="w-5 h-5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
-  }
-
-  if (screen === 'setup') {
-    return <SetupScreen initialProvider={provider} onDone={handleSetupDone} />;
   }
 
   if (screen === 'login') {
@@ -103,13 +94,7 @@ export default function App(): React.ReactElement {
   }
 
   if (screen === 'settings') {
-    return (
-      <SettingsScreen
-        provider={provider}
-        onBack={() => setScreen('home')}
-        onProviderChange={p => setProvider(p)}
-      />
-    );
+    return <SettingsScreen onBack={() => setScreen('home')} />;
   }
 
   return (

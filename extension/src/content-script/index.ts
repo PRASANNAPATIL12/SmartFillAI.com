@@ -878,8 +878,12 @@ function applyHint(
     el.dataset.dittoMatch = 'true';
     el.dataset.dittoKey = entry.canonical_key;
     attachPillListeners(el, entry, result);
-    // Ghost text preview — show value (masked for sensitive entries)
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    // Ghost text preview — show value (masked for sensitive entries).
+    // Skip dropdowns entirely: the profile value ("India") rarely matches
+    // what the option text shows ("India +91"), so a ghost preview would be
+    // misleading. Native <select> and button-dropdowns aren't input/textarea
+    // so they're already excluded; isCombobox() catches role=combobox inputs.
+    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)) {
       const preview = entry.sensitive ? '•••••' : entry.value;
       showGhost(el, preview);
     }

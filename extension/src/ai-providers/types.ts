@@ -108,10 +108,12 @@ export interface ProviderConfig {
   trackCost?: boolean;
 }
 
+// Gemini is the primary provider for new LLM-answer features (owner-provided
+// key, bundled at build time). GROQ remains available as fallback.
 export const DEFAULT_PROVIDER_CONFIG: ProviderConfig = {
-  provider: 'groq',
+  provider: 'gemini',
   trackCost: true,
-  fallbackProvider: 'gemini',
+  fallbackProvider: 'groq',
 };
 
 // ============================================================================

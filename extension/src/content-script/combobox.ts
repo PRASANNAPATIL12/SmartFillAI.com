@@ -17,6 +17,7 @@
 import { expandCountryAliases } from './country-aliases';
 import { expandValueAliases, hasValueAliases } from './value-aliases';
 import { selectOptionByEmbedding } from './option-embedding';
+import { getResolvedOption, setResolvedOption } from './option-resolution-cache';
 
 // Debug logger — mirrors index.ts's SFA_DEBUG gate so combobox failures
 // stay silent for users unless they opt in via window.__SFA_DEBUG = true.
@@ -372,10 +373,19 @@ export async function fillCombobox(
   // first opens. Finding the match here means we never call writeValue at all:
   // no React re-render → DOM references stay fresh → no stale-element problem.
   if (listbox) {
-    const pick = getOptions(listbox).find(o => optionMatches(o, aliases));
+    const opts = getOptions(listbox);
+    const optTexts = opts.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+    // Cache 3 — prior resolution for this option set + value.
+    let pick: HTMLElement | undefined;
+    const cachedText = await getResolvedOption(optTexts, value);
+    if (cachedText) pick = opts.find((_o, i) => optTexts[i] === cachedText);
+
+    if (!pick) pick = opts.find(o => optionMatches(o, aliases));
     if (pick) {
+      const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
       const ok = await clickOption(el, pick, listbox);
-      if (ok) { markFilled(el); return true; }
+      if (ok) { markFilled(el); void setResolvedOption(optTexts, value, pickText); return true; }
     }
   }
 
@@ -401,8 +411,10 @@ export async function fillCombobox(
     let pick = freshOptions.find(o => optionMatches(o, aliases));
     if (!pick && freshOptions.length === 1) pick = freshOptions[0];
     if (pick) {
+      const freshTexts = freshOptions.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
+      const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
       const ok = await clickOption(el, pick, freshListbox);
-      if (ok) { markFilled(el); return true; }
+      if (ok) { markFilled(el); void setResolvedOption(freshTexts, value, pickText); return true; }
     }
   }
 
@@ -424,7 +436,7 @@ export async function fillCombobox(
       if (match && match.index >= 0 && match.index < embedOpts.length) {
         sfaLog('combobox fill via embedding', { value, picked: embedTexts[match.index], similarity: match.similarity.toFixed(3) });
         const ok = await clickOption(el, embedOpts[match.index], embedListbox);
-        if (ok) { markFilled(el); return true; }
+        if (ok) { markFilled(el); void setResolvedOption(embedTexts, value, embedTexts[match.index]); return true; }
       }
     }
   }
@@ -524,7 +536,15 @@ export async function fillButtonDropdown(
 
   const optionTexts = options.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
 
-  let pick = options.find(o => optionMatches(o, aliases));
+  // Cache 3 — option-resolution lookup. If we (or another site with the same
+  // option set) resolved this value before, pick that option directly.
+  let pick: HTMLElement | undefined;
+  const cachedText = await getResolvedOption(optionTexts, value);
+  if (cachedText) {
+    pick = options.find((_o, i) => optionTexts[i] === cachedText);
+  }
+
+  if (!pick) pick = options.find(o => optionMatches(o, aliases));
 
   // Phase A.4 — embedding fallback when alias matching returns nothing.
   // Skipped automatically inside selectOptionByEmbedding for very large
@@ -541,6 +561,7 @@ export async function fillButtonDropdown(
     markFillFailed(el, value, optionTexts);
     return false;
   }
+  const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
 
   // ── 4. Click the option and verify ─────────────────────────────────────
   const beforeText = el.textContent?.trim() ?? '';
@@ -557,6 +578,7 @@ export async function fillButtonDropdown(
   if (panelClosed || textChanged) {
     el.dataset.dittoFilled = 'true';
     delete el.dataset.dittoStatus; // clear any prior FILL_FAILED
+    void setResolvedOption(optionTexts, value, pickText);
     return true;
   }
 

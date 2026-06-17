@@ -325,6 +325,8 @@ export const STORAGE_KEYS = {
   PROFILE_CS_CACHE: 'sfa_profile_cache',
   /** Content-script document metadata cache — mirrors PROFILE_CS_CACHE pattern. */
   DOCUMENTS_META_CACHE: 'documents_meta_cache_v1',
+  /** Option-resolution cache (Cache 3): hash(option-set)::value → chosen option text. */
+  OPTION_RESOLUTION_CACHE: 'option_resolution_cache_v1',
 } as const;
 
 // ============================================================================

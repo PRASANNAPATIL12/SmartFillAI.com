@@ -1,43 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import type { UserSettings } from '@shared/types';
-import type { AIProviderName } from '@/ai-providers';
-import { getAPIKey, setAPIKey, setProviderConfig } from '@/ai-providers';
 import { sendToBackground } from '../utils/messages';
 
 interface Props {
-  provider: AIProviderName;
   onBack: () => void;
-  onProviderChange: (p: AIProviderName) => void;
 }
 
-export default function SettingsScreen({ provider, onBack, onProviderChange }: Props): React.ReactElement {
+export default function SettingsScreen({ onBack }: Props): React.ReactElement {
   const [settings, setSettings] = useState<UserSettings | null>(null);
-  const [apiKey, setApiKeyState] = useState('');
-  const [selectedProvider, setSelectedProvider] = useState<AIProviderName>(provider);
-  const [keySaved, setKeySaved] = useState(false);
   const [monthlyCost, setMonthlyCost] = useState<number | null>(null);
 
   useEffect(() => {
     Promise.all([
       sendToBackground<UserSettings>('GET_SETTINGS'),
-      getAPIKey(provider),
       sendToBackground<{ monthly: number }>('GET_AI_COST'),
-    ]).then(([s, key, cost]) => {
+    ]).then(([s, cost]) => {
       setSettings(s);
-      setApiKeyState(key ? '••••••••' : '');
       setMonthlyCost(cost.monthly);
     }).catch(() => {});
-  }, [provider]);
-
-  async function handleSaveKey(): Promise<void> {
-    const trimmed = apiKey.trim();
-    if (!trimmed || trimmed === '••••••••') return;
-    await setAPIKey(selectedProvider, trimmed);
-    await setProviderConfig({ provider: selectedProvider, fallbackProvider: selectedProvider === 'groq' ? 'gemini' : 'groq' });
-    onProviderChange(selectedProvider);
-    setKeySaved(true);
-    setTimeout(() => setKeySaved(false), 2000);
-  }
+  }, []);
 
   async function toggleSetting(key: keyof Pick<UserSettings, 'autoSave' | 'showGhostText' | 'blockSensitiveDomains' | 'cloudSync'>): Promise<void> {
     if (!settings) return;
@@ -65,46 +46,6 @@ export default function SettingsScreen({ provider, onBack, onProviderChange }: P
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-5">
-
-        {/* AI Provider section */}
-        <div>
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">AI Provider</p>
-          <div className="space-y-2">
-            <select
-              value={selectedProvider}
-              onChange={e => {
-                const p = e.target.value as AIProviderName;
-                setSelectedProvider(p);
-                setApiKeyState('');
-              }}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-400 bg-white"
-            >
-              <option value="groq">GROQ — Llama 3.3</option>
-              <option value="gemini">Google Gemini 2.0 Flash</option>
-            </select>
-
-            <div className="flex gap-2">
-              <input
-                type="password"
-                autoComplete="off"
-                placeholder="Paste new API key to update"
-                value={apiKey}
-                onChange={e => setApiKeyState(e.target.value)}
-                className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-400"
-              />
-              <button
-                onClick={handleSaveKey}
-                className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                  keySaved
-                    ? 'bg-emerald-100 text-emerald-700'
-                    : 'bg-sky-500 text-white hover:bg-sky-600'
-                }`}
-              >
-                {keySaved ? 'Saved' : 'Update'}
-              </button>
-            </div>
-          </div>
-        </div>
 
         {/* Autofill toggles */}
         {settings && (

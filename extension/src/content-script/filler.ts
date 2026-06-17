@@ -17,6 +17,7 @@ import { isCombobox, fillCombobox, fillButtonDropdown } from './combobox';
 import { expandCountryAliases } from './country-aliases';
 import { expandValueAliases, hasValueAliases } from './value-aliases';
 import { selectOptionByEmbedding } from './option-embedding';
+import { getResolvedOption, setResolvedOption } from './option-resolution-cache';
 
 // Capture native setters from the extension's isolated world.
 // Page scripts cannot touch these because isolated worlds have separate prototypes.
@@ -243,6 +244,29 @@ function fillDropzone(el: HTMLElement, file: File): boolean {
 
 async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): Promise<boolean> {
   const options = Array.from(el.options);
+  const optionTexts = options.map(o => o.text);
+
+  // Commit helper — selects the option, fires change, marks filled, and
+  // records the resolution in Cache 3 so the next visit is an instant hit.
+  const commit = (target: HTMLOptionElement): boolean => {
+    if (nativeSelectSetter) nativeSelectSetter.call(el, target.value);
+    else el.value = target.value;
+    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    el.dataset.dittoFilled = 'true';
+    delete el.dataset.dittoStatus; // clear any prior FILL_FAILED
+    void setResolvedOption(optionTexts, value, target.text);
+    return true;
+  };
+
+  // Cache 3 — option-resolution lookup. If a prior fill (or another site
+  // with the same option set) already resolved this value, pick that option
+  // directly. This is what makes large dropdowns instant on revisit even
+  // though we skip embedding for them.
+  const cachedText = await getResolvedOption(optionTexts, value);
+  if (cachedText) {
+    const target = options.find(o => o.text === cachedText);
+    if (target) return commit(target);
+  }
 
   // Expand the profile value to every alias the option text might use:
   //   • country / phone_country_code → "India" expands via country table
@@ -280,30 +304,17 @@ async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: s
         options.find(o => lv.includes(stripped(o.text)) && o.text.trim().length > 2);
     }
 
-    if (target) {
-      if (nativeSelectSetter) nativeSelectSetter.call(el, target.value);
-      else el.value = target.value;
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-      el.dataset.dittoFilled = 'true';
-      delete el.dataset.dittoStatus; // clear any prior FILL_FAILED
-      return true;
-    }
+    if (target) return commit(target);
   }
 
   // Phase A.4 — embedding fallback. When alias/exact/partial all fail, ask
   // the local MiniLM embedder which option is semantically closest to the
   // user's profile value. Skipped for huge option lists (country pickers
-  // handled by the alias table) inside selectOptionByEmbedding itself.
-  const optionTexts = options.map(o => o.text);
+  // handled by the alias table + Cache 3) inside selectOptionByEmbedding.
   const match = await selectOptionByEmbedding(el, value, optionTexts);
   if (match) {
     const target = options[match.index];
     if (target) {
-      if (nativeSelectSetter) nativeSelectSetter.call(el, target.value);
-      else el.value = target.value;
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-      el.dataset.dittoFilled = 'true';
-      delete el.dataset.dittoStatus;
       if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true) {
         console.log('[SmartFillAI] select fill via embedding', {
           value,
@@ -311,11 +322,11 @@ async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: s
           similarity: match.similarity.toFixed(3),
         });
       }
-      return true;
+      return commit(target);
     }
   }
 
-  // No alias / containment / exact-value / embedding matched any option.
+  // No cache / alias / containment / exact / embedding matched any option.
   // Mark visibly so user / regression tests can see we didn't fake a fill.
   el.dataset.dittoStatus = 'FILL_FAILED';
   if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true) {
