@@ -759,7 +759,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
   }
 
-  // File-fill loop — attach documents to file upload fields
+  // File-fill loop — attach documents to file upload fields and dropzones.
+  // `el` may be HTMLInputElement (visible OR hidden native input) or a
+  // <div data-ditto-dropzone="true"> for drag-drop zones.
   for (const [el, state] of matchMap) {
     if (state.result.status !== 'FILE_UPLOAD' || !state.result.docType) continue;
     if (!document.contains(el)) continue;
@@ -771,6 +773,14 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 
     if (!doc) continue;
 
+    // Runtime accept-attribute gate — skip if the input explicitly excludes
+    // our document type. Matcher already rejects image-only inputs at scan
+    // time, but accept can change between scan and fill (SPA re-renders).
+    if (el instanceof HTMLInputElement && el.accept &&
+        !acceptAllowsFile(el.accept, doc.mimeType, doc.fileName)) {
+      continue;
+    }
+
     try {
       const resp = await sendToBackground<{ base64: string }>(
         'GET_DOCUMENT_BYTES', { id: doc.id }
@@ -781,9 +791,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-      const ok = fillFileInput(
-        el as HTMLInputElement, bytes.buffer, doc.fileName, doc.mimeType
-      );
+      const ok = fillFileInput(el, bytes.buffer, doc.fileName, doc.mimeType);
       if (ok) filled++;
     } catch {
       // SW unreachable or doc deleted — skip
@@ -791,6 +799,20 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   }
 
   return { filled, skipped };
+}
+
+/** True if the input's `accept` attribute permits the given file. */
+function acceptAllowsFile(accept: string, mimeType: string, fileName: string): boolean {
+  if (!accept) return true;
+  const mimeL = mimeType.toLowerCase();
+  const ext   = (fileName.match(/\.[^.]+$/)?.[0] ?? '').toLowerCase();
+  const tokens = accept.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+  for (const tok of tokens) {
+    if (tok.startsWith('.') && tok === ext) return true;
+    if (tok.endsWith('/*')  && mimeL.startsWith(tok.slice(0, -1))) return true;
+    if (tok === mimeL) return true;
+  }
+  return false;
 }
 
 // ── Pill fill callback ────────────────────────────────────────────────────────

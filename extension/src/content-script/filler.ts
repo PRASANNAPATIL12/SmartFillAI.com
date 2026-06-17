@@ -118,10 +118,34 @@ export async function fillElement(
   }
 }
 
+/**
+ * Attach a file to either a native <input type="file"> or a drag-and-drop zone.
+ *
+ *  • Native input path: set `el.files` via DataTransfer, fire change/input.
+ *    Works for visible inputs (Greenhouse, Lever, Avathon) and hidden inputs
+ *    (Happiest Minds, iCIMS) that the detector's extractFileInputs() found
+ *    via their reachability anchor.
+ *
+ *  • Dropzone path: dispatch a synthetic dragenter → dragover → drop sequence
+ *    with the file in DataTransfer. Works against react-dropzone, Filepond,
+ *    Uppy, Dropzone.js. As a belt-and-suspenders fallback, after the drop we
+ *    look for a freshly-appended <input type="file"> inside the dropzone and
+ *    set its `.files` directly (some libraries append one on drop).
+ */
 export function fillFileInput(
-  el: HTMLInputElement, fileData: ArrayBuffer, fileName: string, mimeType: string
+  el: HTMLInputElement | HTMLElement,
+  fileData: ArrayBuffer,
+  fileName: string,
+  mimeType: string
 ): boolean {
   const file = new File([fileData], fileName, { type: mimeType });
+
+  // Dropzone path
+  if (!(el instanceof HTMLInputElement) || el.dataset.dittoDropzone === 'true') {
+    return fillDropzone(el, file);
+  }
+
+  // Native input path
   const dt = new DataTransfer();
   dt.items.add(file);
   el.files = dt.files;
@@ -129,6 +153,62 @@ export function fillFileInput(
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dataset.dittoFilled = 'true';
   return el.files !== null && el.files.length > 0;
+}
+
+function fillDropzone(el: HTMLElement, file: File): boolean {
+  const rect = el.getBoundingClientRect();
+  const clientX = rect.left + rect.width / 2;
+  const clientY = rect.top  + rect.height / 2;
+
+  const makeDT = (): DataTransfer => {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    return dt;
+  };
+
+  // Each DragEvent gets its OWN DataTransfer instance. Some frameworks
+  // (react-dropzone) read dt.files in `drop`; others read dt.items in
+  // `dragover` to pre-validate types.
+  const dispatch = (type: string, target: EventTarget): boolean => {
+    const evt = new DragEvent(type, {
+      bubbles:    true,
+      cancelable: true,
+      composed:   true,
+      clientX,
+      clientY,
+      dataTransfer: makeDT(),
+    });
+    return target.dispatchEvent(evt);
+  };
+
+  // Full sequence — drop libraries that listen on either the element or the
+  // window get the events bubbled to them.
+  dispatch('dragenter', el);
+  dispatch('dragover',  el);
+  const dropAccepted = dispatch('drop', el);
+  dispatch('dragleave', document.body);
+
+  // Belt-and-suspenders: if a freshly-mounted <input type=file> appeared
+  // inside the dropzone (Filepond/Uppy pattern), set its .files too.
+  const innerInput = el.querySelector<HTMLInputElement>('input[type="file"]');
+  if (innerInput) {
+    try {
+      const dt = makeDT();
+      innerInput.files = dt.files;
+      innerInput.dispatchEvent(new Event('change', { bubbles: true }));
+      innerInput.dispatchEvent(new Event('input',  { bubbles: true }));
+      innerInput.dataset.dittoFilled = 'true';
+    } catch {
+      // Some libraries make .files non-writable; the DragEvent path
+      // remains our primary attempt in that case.
+    }
+  }
+
+  el.dataset.dittoFilled = 'true';
+  // dropAccepted is true when the framework didn't preventDefault on drop —
+  // best-effort indicator that the file was consumed. We also report success
+  // if we found and populated an inner input.
+  return dropAccepted || !!innerInput;
 }
 
 function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): boolean {
