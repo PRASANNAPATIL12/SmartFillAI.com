@@ -762,40 +762,62 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   // File-fill loop — attach documents to file upload fields and dropzones.
   // `el` may be HTMLInputElement (visible OR hidden native input) or a
   // <div data-ditto-dropzone="true"> for drag-drop zones.
+  let fileCandidates = 0;
   for (const [el, state] of matchMap) {
     if (state.result.status !== 'FILE_UPLOAD' || !state.result.docType) continue;
-    if (!document.contains(el)) continue;
-    if (el.dataset.dittoFilled === 'true') continue;
+    fileCandidates++;
+    if (!document.contains(el)) {
+      console.warn('[SmartFillAI] file fill: el not in document', el);
+      continue;
+    }
+    if (el.dataset.dittoFilled === 'true') {
+      console.warn('[SmartFillAI] file fill: already filled', el);
+      continue;
+    }
 
     const doc = documentsMeta.find(
       d => d.docType === state.result.docType && d.isDefault
     ) ?? documentsMeta.find(d => d.docType === state.result.docType);
 
-    if (!doc) continue;
+    if (!doc) {
+      console.warn('[SmartFillAI] file fill: no doc for type', state.result.docType,
+        'documentsMeta size:', documentsMeta.length);
+      continue;
+    }
 
     // Runtime accept-attribute gate — skip if the input explicitly excludes
     // our document type. Matcher already rejects image-only inputs at scan
     // time, but accept can change between scan and fill (SPA re-renders).
     if (el instanceof HTMLInputElement && el.accept &&
         !acceptAllowsFile(el.accept, doc.mimeType, doc.fileName)) {
+      console.warn('[SmartFillAI] file fill: accept gate rejected', el.accept, doc.mimeType, doc.fileName);
       continue;
     }
 
     try {
+      console.log('[SmartFillAI] file fill: fetching bytes for', doc.fileName);
       const resp = await sendToBackground<{ base64: string }>(
         'GET_DOCUMENT_BYTES', { id: doc.id }
       );
-      if (!resp?.base64) continue;
+      if (!resp?.base64) {
+        console.warn('[SmartFillAI] file fill: no base64 from background');
+        continue;
+      }
 
       const binary = atob(resp.base64);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
+      console.log('[SmartFillAI] file fill: calling fillFileInput', el, doc.fileName);
       const ok = fillFileInput(el, bytes.buffer, doc.fileName, doc.mimeType);
+      console.log('[SmartFillAI] file fill: result', ok, 'files.length:', (el as HTMLInputElement).files?.length);
       if (ok) filled++;
-    } catch {
-      // SW unreachable or doc deleted — skip
+    } catch (err) {
+      console.warn('[SmartFillAI] file fill: threw', err);
     }
+  }
+  if (fileCandidates === 0) {
+    console.warn('[SmartFillAI] file fill: no FILE_UPLOAD candidates in matchMap. matchMap size:', matchMap.size);
   }
 
   return { filled, skipped };
