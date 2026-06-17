@@ -103,8 +103,15 @@ function shouldSkip(sig: FieldSignature): string | null {
   // Search boxes
   if (/\bsearch\b|\bquery\b|site.?search/i.test(combined) && !sig.label) return 'search field';
 
-  // Honeypot fields (hidden via CSS but not type="hidden") — skip to avoid detection
-  if (sig.element && isHoneypot(sig.element)) return 'honeypot field';
+  // Honeypot fields (hidden via CSS but not type="hidden") — skip to avoid detection.
+  // Exception: file inputs are LEGITIMATELY hidden on sites that style them with
+  // custom buttons (Angular Material's <span class="mdc-button__label"> wrapping the
+  // input, plus Happiest Minds, iCIMS, and many other custom HR portals).
+  // For file inputs we trust the detector's extractFileInputs pass to filter out
+  // unreachable ones via the anchor walk.
+  if (sig.element && sig.inputType !== 'file' && isHoneypot(sig.element)) {
+    return 'honeypot field';
+  }
 
   return null;
 }
