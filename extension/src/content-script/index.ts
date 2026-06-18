@@ -3,6 +3,10 @@
 const SFA_DEBUG = (window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true;
 const sfaLog = (...args: unknown[]): void => { if (SFA_DEBUG) console.log('[SmartFillAI]', ...args); };
 
+// TEMPORARY DIAGNOSTIC — unconditional. Tagged [SFA-DIAG], grep-removable.
+// Remove before merging PR1.
+const diag = (...args: unknown[]): void => { console.log('[SFA-DIAG]', ...args); };
+
 sfaLog(
   'content script loaded on',
   location.href,
@@ -17,8 +21,8 @@ import { matchField, fingerprint } from '@/matcher';
 import { fillElement, fillFileInput } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
-import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel } from './overlay';
-import type { EssayTarget } from './overlay';
+import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel } from './overlay';
+import type { EssayTarget, AlternativeEntry } from './overlay';
 import {
   showReadyBanner,
   showEmptyBanner,
@@ -27,9 +31,10 @@ import {
   hideBanner,
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
-import { isCombobox, isComboboxFilled, getComboboxDisplayValue } from './combobox';
+import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions } from './combobox';
 import { resolveCountry } from './country-aliases';
 import { validateLearnedValue } from './value-validation';
+import { getRememberedAnswer, rememberAnswer } from './qa-cache';
 
 // ── Page-level state ──────────────────────────────────────────────────────────
 // Service workers can be terminated, but content scripts live with the tab.
@@ -606,6 +611,12 @@ async function runStep5(): Promise<void> {
 
   for (const [el, state] of matchMap) {
     if (state.result.status === 'UNKNOWN') {
+      // Skip question-style fields. They are NOT profile attributes, so
+      // embedding-matching them to a profile entry (e.g. "Available to join"
+      // → a stale "End date year" entry) is wrong. The Q→A cache / LLM path
+      // owns these.
+      const label = state.sig.label || state.sig.ariaLabel || state.sig.name || '';
+      if (isQuestionLikeLabel(label)) continue;
       unknownFields.push({ el, sig: state.sig });
     }
   }
@@ -661,6 +672,11 @@ async function runStep6(): Promise<void> {
 
   for (const [el, state] of matchMap) {
     if (state.result.status === 'UNKNOWN') {
+      // Question-style fields aren't profile attributes — don't classify them
+      // to a canonical_key. The Q→A cache (B.1) and the dedicated answer-LLM
+      // path (B.4) handle these.
+      const label = state.sig.label || state.sig.ariaLabel || state.sig.name || '';
+      if (isQuestionLikeLabel(label)) continue;
       const text = fieldEmbedText(state.sig);
       if (text.trim()) unknownFields.push({ el, sig: state.sig });
     }
@@ -727,6 +743,24 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     await scanFields();
   }
 
+  // TEMPORARY DIAGNOSTIC — snapshot every detected field and its classification
+  // so we can see whether the country picker is detected, what canonical_key it
+  // got, and whether it has a profile value. Remove before merging PR1.
+  diag('=== FILL START — matchMap snapshot ===');
+  for (const [el, st] of matchMap) {
+    if (st.result.status === 'SKIP') continue;
+    diag('field', {
+      tag: el.tagName,
+      role: el.getAttribute('role'),
+      label: (st.sig.label || st.sig.ariaLabel || st.sig.name || st.sig.id || '').slice(0, 50),
+      status: st.result.status,
+      canonical: st.entry?.canonical_key ?? null,
+      profileValue: st.entry?.value ?? null,
+      docType: st.result.docType ?? null,
+      reason: (st.result.reason ?? '').slice(0, 60),
+    });
+  }
+
   let filled = 0;
   let skipped = 0;
 
@@ -757,6 +791,112 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});
     } else {
       skipped++;
+    }
+  }
+
+  // Q→A replay — UNKNOWN fields the user has answered before. Covers BOTH
+  // dropdowns ("need sponsorship?", "worked here before?") AND free-text
+  // questions ("Available to join (in days)?"). Look up the answer by the
+  // question label; dropdowns select the matching option, text inputs get the
+  // string set directly. This is the learn-and-reuse path for fields that
+  // aren't profile attributes. No AI involved.
+  for (const [el, state] of matchMap) {
+    if (state.result.status !== 'UNKNOWN') continue;
+    if (!document.contains(el)) continue;
+    if (el.dataset.dittoFilled === 'true') continue;
+
+    const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
+      || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
+    const isText = (el instanceof HTMLInputElement
+                     && /^(text|email|tel|url|search|number|)$/.test(el.type))
+                 || el instanceof HTMLTextAreaElement;
+    if (!isDropdown && !isText) continue;
+    // Don't clobber a text field the user already typed into.
+    if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
+
+    const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
+               || state.sig.name  || state.sig.id || '';
+    if (!label) continue;
+
+    let remembered = await getRememberedAnswer(label);
+    let matchSource = 'exact';
+    if (!remembered) {
+      try {
+        const fuzzy = await sendToBackground<{ answer: string | null; similarity?: number; matchedQuestion?: string }>(
+          'FUZZY_QA_MATCH', { question: label }
+        );
+        if (fuzzy?.answer) {
+          remembered = fuzzy.answer;
+          matchSource = 'fuzzy';
+        }
+      } catch { /* embedding model not ready — skip fuzzy */ }
+    }
+    if (!remembered) continue;
+
+    diag('qa-replay', { label: label.slice(0, 50), remembered, matchSource, kind: isDropdown ? 'dropdown' : 'text' });
+    const ok = await fillElement(el, remembered);
+    if (ok) filled++;
+  }
+
+  // ── Final tier: LLM (Gemini) answers questions with no prior answer ──────────
+  // Only reached for still-UNKNOWN dropdowns + question-style text fields that
+  // the user has never answered (no qa-cache hit). Gemini answers from the
+  // profile + resume; the answer is cached so the NEXT visit is a free qa hit.
+  // Capped per fill to bound cost/latency; failures leave the field blank.
+  let llmCalls = 0;
+  const LLM_CALL_CAP = 10;
+  for (const [el, state] of matchMap) {
+    if (llmCalls >= LLM_CALL_CAP) break;
+    if (state.result.status !== 'UNKNOWN') continue;
+    if (!document.contains(el)) continue;
+    if (el.dataset.dittoFilled === 'true') continue;
+
+    const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
+      || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
+    const isText = (el instanceof HTMLInputElement
+                     && /^(text|email|tel|url|search|number|)$/.test(el.type))
+                 || el instanceof HTMLTextAreaElement;
+    if (!isDropdown && !isText) continue;
+    if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
+
+    const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
+               || state.sig.name  || state.sig.id || '';
+    if (!label) continue;
+    // Text fields only go to the LLM if they're actually QUESTIONS; a plain
+    // unmatched attribute text field should stay blank (the user will fill +
+    // we learn it), not get an AI guess.
+    if (isText && !isQuestionLikeLabel(label)) continue;
+
+    // Options for the LLM (so it returns a valid choice verbatim).
+    let options: string[] = [];
+    if (isDropdown) {
+      options = (state.sig.options && state.sig.options.length) ? state.sig.options : [];
+      if (options.length === 0) {
+        try { options = await peekOptions(el); } catch { options = []; }
+      }
+    }
+
+    llmCalls++;
+    diag('llm-tier calling ANSWER_FIELD', { label: label.slice(0, 60), optionCount: options.length, isDropdown, isText });
+    let resp: { answer: string | null; confidence: number } | null = null;
+    try {
+      resp = await sendToBackground<{ answer: string | null; confidence: number }>(
+        'ANSWER_FIELD', { question: label, options }
+      );
+      diag('llm-tier response', { label: label.slice(0, 60), answer: resp?.answer, confidence: resp?.confidence });
+    } catch (err) {
+      diag('llm-tier ERROR', { label: label.slice(0, 60), error: String(err) });
+      resp = null;
+    }
+    if (!resp?.answer) continue;
+
+    diag('llm-answer', { label: label.slice(0, 50), answer: resp.answer, confidence: resp.confidence });
+    const ok = await fillElement(el, resp.answer);
+    if (ok) {
+      filled++;
+      // Cache so the next visit skips the LLM (free qa-cache hit).
+      rememberAnswer(label, resp.answer, 'llm').catch(() => {});
+      sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
     }
   }
 
@@ -885,7 +1025,9 @@ function applyHint(
     // so they're already excluded; isCombobox() catches role=combobox inputs.
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)) {
       const preview = entry.sensitive ? '•••••' : entry.value;
-      showGhost(el, preview);
+      const altCount = (result.alternativeCount ?? 1) - 1;
+      const suffix = altCount > 0 ? ` (+${altCount})` : '';
+      showGhost(el, preview + suffix);
     }
   } else if (result.status === 'FILE_UPLOAD') {
     el.dataset.dittoMatch = 'file';
@@ -925,6 +1067,12 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
     el.dataset.dittoPreFocusValue = capturePreFocus();
   });
 
+  // Alternatives panel — show on focus if multiple values exist
+  if ((result.alternativeCount ?? 0) > 1) {
+    el.addEventListener('focus', () => openAlternativesPanel(el, entry));
+    el.addEventListener('blur', () => setTimeout(hideAlternativesPanel, 150));
+  }
+
   let updateTimer: ReturnType<typeof setTimeout> | undefined;
   const trigger = (): void => {
     clearTimeout(updateTimer);
@@ -946,8 +1094,31 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
 // Dedup uses `dataset.dittoLastLearnedValue` (for learn) and the existing
 // `dataset.dittoPreFocusValue` (for update). Both prevent the same value
 // being saved twice across rapid event fires (blur + change + focusout).
+/**
+ * True when a label reads like a form QUESTION rather than a profile attribute.
+ * Questions ("Are you authorized…?", "Available to join (in days)?", "How did
+ * you hear about us?") are remembered in the Q→A cache keyed by the question,
+ * NOT learned as canonical profile entries. Mirrors matcher.ts's incidental-
+ * noun guard so classification and learning agree.
+ */
+function isQuestionLikeLabel(label: string): boolean {
+  const t = (label || '').trim();
+  if (!t) return false;
+  if (/\?/.test(t)) return true;
+  if (/\b(are|do|does|did|have|has|will|would|can|could|should|is|was|were|how|what|why|when|which|where)\b/i.test(t)
+      && /\byou\b/i.test(t)) return true;
+  // A long label that matched no rule is almost always a bespoke question.
+  return t.split(/\s+/).length > 4;
+}
+
 function tryLearnField(el: HTMLElement): void {
   if (!el.isConnected) return;
+
+  // Never learn checkbox / radio inputs. Their `.value` is a control ID
+  // (e.g. Greenhouse's "243839894002"), not user-meaningful data — learning
+  // it pollutes the profile with junk under junk canonical keys.
+  if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) return;
+
   // NOTE: do NOT guard on dittoFilled here. That marker is preserved on comboboxes
   // as long as they show a committed value. Blocking on it would permanently prevent
   // user-initiated dropdown changes from updating the profile after an auto-fill.
@@ -974,56 +1145,125 @@ function tryLearnField(el: HTMLElement): void {
       ? (el.textContent?.trim() ?? '')
       : ((el as HTMLInputElement).value ?? '');
   const value    = rawValue.trim();
+
+  // A combobox/button that reads back as just a calling code ("+1", "+246")
+  // is the mis-read collapsed display of a country/phone picker. The reliable
+  // value comes from the clicked-option capture (learnDropdownSelection), not
+  // from this display read — so don't learn the garbage here.
+  if ((comboLike || isButton) && /^\+\d{1,4}$/.test(value)) return;
+
+  // TEMPORARY DIAGNOSTIC — only when there's an actual captured value, so the
+  // 2.5s sweep over empty dropdowns doesn't spam the console. Remove with the
+  // other [SFA-DIAG] logs before merge.
+  if ((comboLike || isButton) && value) {
+    diag('tryLearnField (dropdown)', {
+      label: (state.sig.label || state.sig.ariaLabel || state.sig.name || '').slice(0, 50),
+      status: state.result.status,
+      comboLike, isButton,
+      capturedValue: value,
+      existingValue: state.entry?.value ?? null,
+    });
+  }
   if (!value) return;
 
-  // ── UNKNOWN → learn (create new entry) ──
+  // ── UNKNOWN → learn ──
   if (state.result.status === 'UNKNOWN') {
     if (el.dataset.dittoLastLearnedValue === value) return; // already tried
     el.dataset.dittoLastLearnedValue = value;
-    // Universal sanity check at LEARN time. Canonical_key isn't known yet
-    // (background will infer it), so we use the canonical-less validator
-    // which catches the "entire option list captured as value" bug
-    // (length > 200, multi-newline, multiple "+NN" runs).
+    // Universal sanity check at LEARN time (catches the "entire option list
+    // captured as value" bug: length > 200, multi-newline, multiple "+NN").
     if (!validateLearnedValue(undefined, value)) {
       sfaLog('learn rejected: bad value shape', value.slice(0, 80));
       return;
     }
+
+    const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
+               || state.sig.name  || state.sig.id        || 'Field';
+
+    // Question-style or long labels are NOT profile attributes — they're
+    // form questions ("Available to join (in days)?", "How did you hear…?").
+    // Remember the answer keyed by the question (qa-cache) and KEEP IT OUT of
+    // the canonical profile, so we never create junk entries like
+    // "end date year = 35 days". Short attribute-ish labels still flow into
+    // the profile so genuine custom fields (a new social link, etc.) enrich it.
+    if (isQuestionLikeLabel(label)) {
+      diag('learn → qa-cache (question text field)', { label: label.slice(0, 50), value });
+      rememberAnswer(label, value).catch(() => {});
+      sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      return;
+    }
+
     if (autoSave) {
-      sfaLog('learn:', state.sig.label || state.sig.name || state.sig.id, '=', value);
+      sfaLog('learn:', label, '=', value);
       doLearnField(el, state.sig, value).catch(() => {});
     } else {
-      const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
-                 || state.sig.name  || state.sig.id        || 'Field';
       showLearnPill({ el, label, value });
     }
     return;
   }
 
-  // ── MATCHED → update if value has actually changed since focus ──
+  // ── MATCHED → multi-value Update-or-Add flow ──
   if (state.result.status === 'MATCHED' && state.entry) {
     if (state.entry.sensitive) return;
-    // Normalize before comparing: "🇮🇳 India +91" and "India" are the same country.
     const normalizedValue = normalizeLearnedValue(value, state.entry.canonical_key);
-    if (normalizedValue === state.entry.value) return;    // unchanged from profile
+    if (normalizedValue === state.entry.value) return;
     const preFocus = (el.dataset.dittoPreFocusValue ?? '').trim();
     if (preFocus && normalizedValue === normalizeLearnedValue(preFocus, state.entry.canonical_key)) return;
     if (el.dataset.dittoLastLearnedValue === normalizedValue) return;
-    // Canonical-specific validation at UPDATE time. We know the canonical_key
-    // for sure here, so we apply the stricter shape rule (e.g. phone_country_code
-    // must match /^\+?\d{1,4}$/, rejecting "243839891002" outright).
+    if (el.dataset.dittoUpdatePromptShown === normalizedValue) return;
     if (!validateLearnedValue(state.entry.canonical_key, normalizedValue)) {
       sfaLog('update rejected: bad value shape for', state.entry.canonical_key, '→', normalizedValue.slice(0, 80));
       return;
     }
     el.dataset.dittoLastLearnedValue = normalizedValue;
-    if (autoSave) {
-      sfaLog('update:', state.entry.display_label, '→', normalizedValue);
-      doUpdateEntry(state.entry.id, normalizedValue).catch(() => {});
-      el.dataset.dittoPreFocusValue = normalizedValue;
-    } else {
-      const label = state.entry.display_label || 'Field';
-      showLearnPill({ el, label: `Update ${label}?`, value: normalizedValue });
-    }
+    el.dataset.dittoUpdatePromptShown = normalizedValue;
+
+    const canonicalKey = state.entry.canonical_key;
+    const displayLabel = state.entry.display_label || 'Field';
+    const entryId = state.entry.id;
+
+    (async () => {
+      try {
+        const isDup = await sendToBackground<boolean>('CHECK_DUPLICATE_VALUE', {
+          canonicalKey, value: normalizedValue,
+        });
+        if (isDup) return;
+
+        const count = (await sendToBackground<ProfileEntry[]>('GET_ALTERNATIVES', { canonicalKey })).length;
+        const maxAlts = 5;
+
+        if (count >= maxAlts) {
+          sfaLog('update (cap reached):', displayLabel, '→', normalizedValue);
+          doUpdateEntry(entryId, normalizedValue).catch(() => {});
+          el.dataset.dittoPreFocusValue = normalizedValue;
+          return;
+        }
+
+        showUpdateOrAddPill({
+          el,
+          label: displayLabel,
+          oldValue: state.entry!.value,
+          newValue: normalizedValue,
+          onUpdate: () => {
+            sfaLog('update:', displayLabel, '→', normalizedValue);
+            doUpdateEntry(entryId, normalizedValue).catch(() => {});
+            el.dataset.dittoPreFocusValue = normalizedValue;
+          },
+          onAdd: () => {
+            sfaLog('add alternative:', displayLabel, '→', normalizedValue);
+            sendToBackground('ADD_ALTERNATIVE', {
+              canonicalKey,
+              value: normalizedValue,
+              displayLabel,
+              category: state.entry!.category,
+            }).catch(() => {});
+          },
+        });
+      } catch {
+        // Fallback: silent update if background is unavailable
+        doUpdateEntry(entryId, normalizedValue).catch(() => {});
+      }
+    })();
   }
 }
 
@@ -1100,17 +1340,102 @@ function handleGlobalSubmit(): void {
 // Safe to call tryLearnField on ALL comboboxes: the dedup logic inside
 // (dittoLastLearnedValue check + profile-value comparison) prevents double-saves.
 function handleListboxOptionMousedown(e: MouseEvent): void {
+  // Only genuine USER clicks — our own programmatic clickOption() dispatches
+  // mousedown with isTrusted=false. Without this guard we'd "learn" whatever
+  // WE just auto-filled, creating feedback loops.
+  if (!e.isTrusted) return;
+
   const target = e.target as HTMLElement | null;
   if (!target) return;
 
-  // Only act when the click lands on or inside a listbox option
-  if (!target.closest('[role="option"]')) return;
+  const optionEl = target.closest('[role="option"]') as HTMLElement | null;
+  if (!optionEl) return;
 
+  // Capture the FULL text of the option the user actually clicked
+  // ("India +91", "Yes - I currently work at Databricks") — this is reliable,
+  // unlike reading the collapsed widget afterward (which yields just "+91"/"+1").
+  const optionText = (optionEl.textContent ?? '').replace(/\s+/g, ' ').trim();
+  if (!optionText) return;
+
+  const listbox = optionEl.closest('[role="listbox"]') as HTMLElement | null;
+
+  // Find the owning field: prefer the focused combobox (react-select keeps the
+  // input focused through the click); otherwise the matchMap combobox whose
+  // listbox contains this option.
   setTimeout(() => {
-    for (const [el] of matchMap) {
-      if (isCombobox(el)) tryLearnField(el);
+    let owner: HTMLElement | null = null;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && matchMap.has(active) && isCombobox(active)) {
+      owner = active;
+    } else if (listbox) {
+      for (const [el] of matchMap) {
+        if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+            && isCombobox(el) && findListbox(el) === listbox) {
+          owner = el;
+          break;
+        }
+      }
     }
-  }, 200);
+    if (owner) learnDropdownSelection(owner, optionText);
+  }, 60);
+}
+
+/**
+ * Learn a dropdown selection from the EXACT option text the user clicked.
+ * Reliable because it doesn't depend on reading the collapsed widget display.
+ *
+ * Two stores, both updated:
+ *   1. Q→A memory (qa-cache) keyed by the question/label — lets question-style
+ *      dropdowns ("need sponsorship?", "worked here before?") be replayed on
+ *      any site next time.
+ *   2. Canonical profile (for attribute dropdowns — country, gender, etc.) via
+ *      the normal learn/update path so they flow into the profile + sync.
+ */
+function learnDropdownSelection(el: HTMLElement, optionText: string): void {
+  const state = matchMap.get(el);
+  if (!state) return;
+  const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
+             || state.sig.name  || state.sig.id || '';
+
+  diag('learnDropdownSelection', { label: label.slice(0, 50), status: state.result.status, optionText });
+
+  // 1. Always remember the answer keyed by the question text (works for both
+  //    question-style dropdowns AND attribute dropdowns).
+  if (label) {
+    rememberAnswer(label, optionText).catch(() => {});
+    sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+  }
+
+  // 2. Attribute dropdowns also flow into the canonical profile — but NOT
+  //    question-style ones ("need sponsorship?", "worked here?"), which would
+  //    otherwise create junk profile entries. Those live in qa-cache only.
+  if (state.result.status === 'UNKNOWN') {
+    if (isQuestionLikeLabel(label)) return; // qa-cache already has it
+    if (el.dataset.dittoLastLearnedValue === optionText) return;
+    el.dataset.dittoLastLearnedValue = optionText;
+    if (!validateLearnedValue(undefined, optionText)) return;
+    if (autoSave) {
+      doLearnField(el, state.sig, optionText).catch(() => {});
+    } else {
+      showLearnPill({ el, label: label || 'Field', value: optionText });
+    }
+    return;
+  }
+
+  if (state.result.status === 'MATCHED' && state.entry) {
+    if (state.entry.sensitive) return;
+    const normalized = normalizeLearnedValue(optionText, state.entry.canonical_key);
+    if (normalized === state.entry.value) return;
+    if (!validateLearnedValue(state.entry.canonical_key, normalized)) return;
+    if (el.dataset.dittoLastLearnedValue === normalized) return;
+    el.dataset.dittoLastLearnedValue = normalized;
+    if (autoSave) {
+      doUpdateEntry(state.entry.id, normalized).catch(() => {});
+      el.dataset.dittoPreFocusValue = normalized;
+    } else {
+      showLearnPill({ el, label: `Update ${state.entry.display_label || 'field'}?`, value: normalized });
+    }
+  }
 }
 
 function attachLearnListeners(el: HTMLElement): void {
@@ -1208,6 +1533,43 @@ async function doUpdateEntry(id: string, value: string): Promise<void> {
     chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
   } catch {
     // Network/storage error — non-fatal; user can re-edit
+  }
+}
+
+async function openAlternativesPanel(el: HTMLElement, currentEntry: ProfileEntry): Promise<void> {
+  try {
+    const all = await sendToBackground<ProfileEntry[]>('GET_ALTERNATIVES', {
+      canonicalKey: currentEntry.canonical_key,
+    });
+    if (all.length < 2) return;
+
+    const entries: AlternativeEntry[] = all
+      .filter(e => (e.priority ?? 999) < 999)
+      .map(e => ({
+        id:        e.id,
+        value:     e.value,
+        isDefault: (e.priority ?? 0) === 0,
+        sensitive: e.sensitive,
+      }));
+    if (entries.length < 2) return;
+
+    const label = currentEntry.display_label || currentEntry.canonical_key;
+
+    showAlternativesPanel(el, label, entries, (entryId, value) => {
+      sendToBackground('SET_DEFAULT_ENTRY', { entryId }).catch(() => {});
+      // Fill the field with the selected value
+      const state = matchMap.get(el);
+      if (state) {
+        const alt = all.find(e => e.id === entryId);
+        if (alt) {
+          fillElement(el, value, alt.canonical_key);
+          matchMap.set(el, { ...state, entry: alt });
+          el.dataset.dittoPreFocusValue = value;
+        }
+      }
+    });
+  } catch {
+    // Background unavailable — skip
   }
 }
 

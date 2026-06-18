@@ -10,6 +10,11 @@ import type { MessageType } from '@shared/types';
  * false and preventing scanFields() from ever running.
  */
 const TIMEOUT_MS = 8_000;
+const TIMEOUT_LONG_MS = 30_000;
+
+const LONG_TIMEOUT_TYPES: Set<MessageType> = new Set([
+  'ANSWER_FIELD', 'STEP6_CLASSIFY', 'GENERATE_ESSAY', 'PARSE_RESUME',
+]);
 
 function sendOnce<T>(type: MessageType, payload?: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -18,9 +23,10 @@ function sendOnce<T>(type: MessageType, payload?: unknown): Promise<T> {
       if (!settled) { settled = true; fn(); }
     };
 
+    const ms = LONG_TIMEOUT_TYPES.has(type) ? TIMEOUT_LONG_MS : TIMEOUT_MS;
     const timer = setTimeout(
       () => settle(() => reject(new Error(`[SFA] background timeout (${type})`))),
-      TIMEOUT_MS
+      ms
     );
 
     chrome.runtime.sendMessage({ type, payload }, (response) => {

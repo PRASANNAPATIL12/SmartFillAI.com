@@ -23,11 +23,42 @@ import { validateLearnedValue } from './content-script/value-validation';
  * to forms. By treating invalid entries as missing, we degrade gracefully:
  * the field stays UNKNOWN and the user can re-learn it cleanly.
  */
-function findValidEntry(profile: ProfileEntry[], canonicalKey: string): ProfileEntry | undefined {
-  const entry = profile.find(p => p.canonical_key === canonicalKey);
-  if (!entry) return undefined;
-  if (!validateLearnedValue(canonicalKey, entry.value)) return undefined;
-  return entry;
+function findDefaultEntry(profile: ProfileEntry[], canonicalKey: string): ProfileEntry | undefined {
+  const candidates = profile
+    .filter(p => p.canonical_key === canonicalKey)
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+  for (const entry of candidates) {
+    if (validateLearnedValue(canonicalKey, entry.value)) return entry;
+  }
+  return undefined;
+}
+
+export function findAllValidEntries(profile: ProfileEntry[], canonicalKey: string): ProfileEntry[] {
+  return profile
+    .filter(p => p.canonical_key === canonicalKey && validateLearnedValue(canonicalKey, p.value))
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+}
+
+// Simple noun canonical keys whose value is a short literal (a country, a
+// city, a name). When one of these is matched only because the keyword
+// appears INSIDE a long question, the match is almost certainly wrong.
+const SIMPLE_NOUN_KEYS = new Set([
+  'country', 'city', 'state', 'zip_code', 'street_address', 'address_line2',
+  'first_name', 'last_name', 'full_name', 'middle_name', 'nationality',
+]);
+const QUESTION_RE = /\?|\b(are|do|does|did|have|has|will|would|can|could|should|is|was|were)\s+you\b/i;
+
+/**
+ * True when `canonical` is a simple-noun key but the field's label reads like
+ * a (long) question — i.e. the keyword is incidental, not the field's purpose.
+ * Example: "Are you legally authorized to work in the country…" matches the
+ * `country` rule but is really a yes/no question.
+ */
+function isIncidentalNounMatch(sig: FieldSignature, canonical: string): boolean {
+  if (!SIMPLE_NOUN_KEYS.has(canonical)) return false;
+  const text = combine(sig);
+  if (!QUESTION_RE.test(text)) return false;
+  return text.trim().split(/\s+/).length > 6; // long question → keyword is incidental
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +106,7 @@ export function matchField(
     if (cached.profileEntryId) {
       const entry = profile.find(e => e.id === cached.profileEntryId);
       if (entry && validateLearnedValue(entry.canonical_key, entry.value)) {
+        cached.alternativeCount = findAllValidEntries(profile, entry.canonical_key).length;
         return cached;
       }
     }
@@ -87,7 +119,20 @@ export function matchField(
   // Step 4: Deterministic rules
   const rule = ruleMatch(sig);
   if (rule) {
-    const entry = findValidEntry(profile, rule.canonical);
+    // Guard against incidental-keyword matches. A long question label like
+    // "Are you legally authorized to work in the country in which you are
+    // applying?" contains the word "country" and would otherwise match the
+    // `country` rule — then we'd fill a Yes/No question with a country name.
+    // Drop these to UNKNOWN so the LLM-answer path (PR2) handles them; never
+    // cross-fill a simple noun value into a question field.
+    if (isIncidentalNounMatch(sig, rule.canonical)) {
+      return {
+        status: 'UNKNOWN',
+        reason: `question-style label; incidental "${rule.canonical}" keyword ignored`,
+        matchStep: 4,
+      };
+    }
+    const entry = findDefaultEntry(profile, rule.canonical);
     if (entry) {
       return {
         status: 'MATCHED',
@@ -95,6 +140,7 @@ export function matchField(
         confidence: rule.confidence,
         reason: rule.reason,
         matchStep: 4,
+        alternativeCount: findAllValidEntries(profile, rule.canonical).length,
       };
     }
     // We know what it IS, but the user hasn't filled that profile entry
@@ -545,7 +591,7 @@ function finalizeOptionSetMatch(
   profile: ProfileEntry[],
   reason: string
 ): MatchResult {
-  const entry = findValidEntry(profile, canonical);
+  const entry = findDefaultEntry(profile, canonical);
   if (entry) {
     return {
       status: 'MATCHED',
@@ -553,6 +599,7 @@ function finalizeOptionSetMatch(
       confidence: 0.95,
       reason,
       matchStep: 0,
+      alternativeCount: findAllValidEntries(profile, canonical).length,
     };
   }
   return {

@@ -151,18 +151,37 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
     }));
   }
 
-  // Group entries by category in defined order
+  async function handleSetDefault(entryId: string): Promise<void> {
+    try {
+      await sendToBackground('SET_DEFAULT_ENTRY', { entryId });
+      await loadEntries();
+    } catch {
+      // silent
+    }
+  }
+
+  // Group entries by category in defined order, then by canonical_key within each
   const grouped = CATEGORY_ORDER.reduce<Record<string, ProfileEntry[]>>((acc, cat) => {
     const cat_entries = entries.filter(e => e.category === cat);
     if (cat_entries.length > 0) acc[cat] = cat_entries;
     return acc;
   }, {});
-  // Append entries with unrecognised categories
   entries.forEach(e => {
     if (!CATEGORY_ORDER.includes(e.category as EntryCategory)) {
       (grouped['other'] ??= []).push(e);
     }
   });
+
+  function groupByKey(list: ProfileEntry[]): Map<string, ProfileEntry[]> {
+    const map = new Map<string, ProfileEntry[]>();
+    for (const e of list) {
+      const arr = map.get(e.canonical_key) ?? [];
+      arr.push(e);
+      map.set(e.canonical_key, arr);
+    }
+    for (const [, arr] of map) arr.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+    return map;
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -293,48 +312,78 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
               </div>
             )}
 
-            {!loading && Object.entries(grouped).map(([cat, catEntries]) => (
-              <div key={cat}>
-                <p className="px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide bg-slate-50 border-b border-slate-100">
-                  {CATEGORY_LABELS[cat as EntryCategory] ?? cat}
-                </p>
-                {catEntries.map(entry => (
-                  <div
-                    key={entry.id}
-                    className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-50 hover:bg-slate-50 group"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-700 truncate">{entry.display_label}</p>
-                      <p className="text-xs text-slate-400 truncate">
-                        {entry.sensitive ? maskValue(entry.value) : entry.value}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => openEdit(entry)}
-                        title="Edit"
-                        className="p-1.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => handleDelete(entry.id)}
-                        title="Delete"
-                        className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ))}
+            {!loading && Object.entries(grouped).map(([cat, catEntries]) => {
+              const keyGroups = groupByKey(catEntries);
+              return (
+                <div key={cat}>
+                  <p className="px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide bg-slate-50 border-b border-slate-100">
+                    {CATEGORY_LABELS[cat as EntryCategory] ?? cat}
+                  </p>
+                  {[...keyGroups.entries()].map(([, keyEntries]) =>
+                    keyEntries.map((entry, idx) => {
+                      const isDefault = (entry.priority ?? 0) === 0;
+                      const hasAlts = keyEntries.length > 1;
+                      return (
+                        <div
+                          key={entry.id}
+                          className={`flex items-center gap-3 px-4 py-2.5 border-b border-slate-50 hover:bg-slate-50 group ${!isDefault && hasAlts ? 'pl-8' : ''}`}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-sm text-slate-700 truncate">{entry.display_label}</p>
+                              {isDefault && hasAlts && (
+                                <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium bg-indigo-50 text-indigo-600 rounded">
+                                  default
+                                </span>
+                              )}
+                              {hasAlts && idx === 0 && (
+                                <span className="shrink-0 text-[10px] text-slate-400">
+                                  +{keyEntries.length - 1}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-slate-400 truncate">
+                              {entry.sensitive ? maskValue(entry.value) : entry.value}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {!isDefault && hasAlts && (
+                              <button
+                                onClick={() => handleSetDefault(entry.id)}
+                                title="Set as default"
+                                className="px-1.5 py-0.5 text-[10px] font-medium text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
+                              >
+                                Default
+                              </button>
+                            )}
+                            <button
+                              onClick={() => openEdit(entry)}
+                              title="Edit"
+                              className="p-1.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => handleDelete(entry.id)}
+                              title="Delete"
+                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

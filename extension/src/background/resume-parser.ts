@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { AIProviderFactory, getAPIKey, getProviderConfig } from '@/ai-providers';
+import { AIProviderFactory, getProviderConfig } from '@/ai-providers';
+import { ENV_GEMINI_API_KEY } from '@/ai-providers/env';
 import type { ResumeParseResult, ProfileEntry } from '@shared/types';
 import { addEntry, type NewEntryData } from './profile-store';
 import { computeEmbedding } from '@/ml/embedder';
@@ -28,8 +29,11 @@ const PARSE_PROMPT = `Parse the resume and return JSON matching this exact struc
   "education": [{ "institution": string, "degree": string, "year": string, "gpa": string | null }],
   "work_experience": [{ "company": string, "role": string, "duration": string, "highlights": string[] }],
   "skills": string[],
-  "certifications": string[]
+  "certifications": string[],
+  "full_text": string
 }
+
+"full_text" must contain the COMPLETE resume content as natural-language text, preserving all sections, bullet points, dates, and details exactly as written. This is used as context for answering job-application questions, so omit nothing.
 
 Return ONLY valid JSON. No explanations, no markdown.
 
@@ -44,7 +48,7 @@ export async function parseResumeText(text: string): Promise<ResumeParseResult> 
     messages: [{ role: 'user', content: PARSE_PROMPT + text }],
     system: PARSE_SYSTEM,
     responseFormat: 'json_object',
-    maxTokens: 2048,
+    maxTokens: 8192,
     temperature: 0.1,
   });
 
@@ -67,16 +71,15 @@ export async function parseResumePdf(pdfBase64: string): Promise<ResumeParseResu
     );
   }
 
-  const apiKey = await getAPIKey('gemini');
-  if (!apiKey) throw new Error('Gemini API key not configured.');
+  if (!ENV_GEMINI_API_KEY) throw new Error('Gemini API key not configured.');
 
-  const genAI = new GoogleGenerativeAI(apiKey);
+  const genAI = new GoogleGenerativeAI(ENV_GEMINI_API_KEY);
   const model = genAI.getGenerativeModel({
     model: 'gemini-2.0-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.1,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 8192,
     },
   });
 

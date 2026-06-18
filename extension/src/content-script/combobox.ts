@@ -27,6 +27,35 @@ const sfaLog = (...args: unknown[]): void => {
   }
 };
 
+// TEMPORARY DIAGNOSTIC — unconditional. Tagged [SFA-DIAG] so it's easy to
+// copy from the console and easy to grep-remove once the dropdown issue is
+// pinned down. Remove before merging PR1.
+const diag = (...args: unknown[]): void => { console.log('[SFA-DIAG]', ...args); };
+
+/** Snapshot every dropdown-ish container currently in the DOM — used when our
+ *  known panel selectors find nothing, to reveal the widget's real structure. */
+function diagDumpPanels(): void {
+  const sel = [
+    '[role="listbox"]', '[role="menu"]', '[role="grid"]', 'ul[class]',
+    '[class*="dropdown" i]', '[class*="menu" i]', '[class*="options" i]',
+    '[class*="select" i]', '[class*="listbox" i]', '[class*="popover" i]',
+  ].join(',');
+  const found = Array.from(document.querySelectorAll<HTMLElement>(sel))
+    .filter(el => {
+      const s = window.getComputedStyle(el);
+      return s.display !== 'none' && s.visibility !== 'hidden' && el.offsetParent !== null;
+    })
+    .slice(0, 15)
+    .map(el => ({
+      tag: el.tagName,
+      role: el.getAttribute('role'),
+      class: (el.getAttribute('class') ?? '').slice(0, 80),
+      childOptionish: el.querySelectorAll('[role="option"], li, [class*="option" i]').length,
+      sampleText: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    }));
+  diag('visible dropdown-ish containers after open:', found);
+}
+
 /**
  * Mark a combobox/button-dropdown control as having failed to find a
  * matching option. Visible via `[data-ditto-status="FILL_FAILED"]` so the
@@ -191,7 +220,7 @@ function findControlAncestor(el: HTMLElement): HTMLElement {
 
 // ── Listbox lookup ────────────────────────────────────────────────────────────
 
-function findListbox(el: HTMLInputElement | HTMLTextAreaElement): HTMLElement | null {
+export function findListbox(el: HTMLInputElement | HTMLTextAreaElement): HTMLElement | null {
   // 1. aria-controls is the most explicit and reliable link
   const controls = el.getAttribute('aria-controls');
   if (controls) {
@@ -312,19 +341,87 @@ async function clickOption(
   pick: HTMLElement,
   listbox: HTMLElement
 ): Promise<boolean> {
-  pick.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-  pick.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
-  pick.click();
+  pick.scrollIntoView?.({ block: 'nearest' });
+
+  // react-select v5 commits on a LEFT-button pointer/mouse DOWN and checks
+  // event.button === 0. A bare MouseEvent('mousedown') has button 0 but no
+  // pointer events; some builds gate on pointerdown. Fire the full sequence
+  // with explicit button/buttons so whichever handler the build uses fires.
+  const downOpts = { bubbles: true, cancelable: true, button: 0, buttons: 1, view: window } as MouseEventInit;
+  const upOpts   = { bubbles: true, cancelable: true, button: 0, buttons: 0, view: window } as MouseEventInit;
+  try { pick.dispatchEvent(new PointerEvent('pointerdown', downOpts)); } catch { /* no PointerEvent */ }
+  pick.dispatchEvent(new MouseEvent('mousedown', downOpts));
+  try { pick.dispatchEvent(new PointerEvent('pointerup', upOpts)); } catch { /* no PointerEvent */ }
+  pick.dispatchEvent(new MouseEvent('mouseup', upOpts));
+  pick.dispatchEvent(new MouseEvent('click', upOpts));
   await sleep(120);
 
-  // If the listbox is still attached + open, click didn't commit.
-  // Enter works for downshift, ariakit, and some custom dropdown libs.
+  // If the listbox is still attached + open, the pointer path didn't commit.
+  // Enter commits the highlighted option (downshift, ariakit, react-select).
   if (listbox.isConnected && findListbox(el) !== null) {
     dispatchKey(el, 'Enter');
     await sleep(80);
   }
 
-  return getComboboxDisplayValue(el).length > 0;
+  const committed = getComboboxDisplayValue(el).length > 0;
+  diag('clickOption', { pickText: (pick.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40), committed, menuStillOpen: findListbox(el) !== null });
+  return committed;
+}
+
+/**
+ * Open a dropdown just long enough to read its option texts, then close it.
+ * Used by the LLM answer tier so Gemini can be shown the real choices and
+ * return one verbatim. Best-effort: returns [] if options can't be read
+ * (the fill path's embedding match is the fallback).
+ */
+export async function peekOptions(el: HTMLElement): Promise<string[]> {
+  // Native <select> — options are always in the DOM.
+  if (el instanceof HTMLSelectElement) {
+    return Array.from(el.options).map(o => (o.text ?? '').trim()).filter(Boolean);
+  }
+
+  // ARIA combobox input.
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    el.focus();
+    await sleep(40);
+    if (!findListbox(el)) {
+      const control = findControlAncestor(el);
+      control.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      control.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+    }
+    let lb: HTMLElement | null = null;
+    for (let i = 0; i < 8; i++) {
+      await sleep(70);
+      lb = findListbox(el);
+      if (lb && getOptions(lb).length > 0) break;
+    }
+    const opts = lb ? getOptions(lb).map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean) : [];
+    dispatchKey(el, 'Escape'); // close so the subsequent fill starts clean
+    return opts.slice(0, 60);
+  }
+
+  // Button / div dropdown — click to open, read a visible listbox/ul, then close.
+  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
+  el.click();
+  let panel: HTMLElement | null = null;
+  for (let i = 0; i < 8; i++) {
+    await sleep(70);
+    panel = Array.from(document.querySelectorAll<HTMLElement>('[role="listbox"], ul.country-list, .iti__country-list'))
+      .find(p => {
+        const s = window.getComputedStyle(p);
+        return s.display !== 'none' && s.visibility !== 'hidden' && p.offsetParent !== null;
+      }) ?? null;
+    if (panel) break;
+  }
+  const opts = panel
+    ? Array.from(panel.querySelectorAll<HTMLElement>('[role="option"], li, [data-option]'))
+        .filter(o => o.offsetParent !== null)
+        .map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+    : [];
+  document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // close panel
+  return opts.slice(0, 60);
 }
 
 export async function fillCombobox(
@@ -368,6 +465,13 @@ export async function fillCombobox(
     if (listbox && getOptions(listbox).length > 0) break;
   }
 
+  diag('fillCombobox', {
+    value, aliases,
+    listboxFound: !!listbox,
+    optionCount: listbox ? getOptions(listbox).length : 0,
+    optionsSample: listbox ? getOptions(listbox).slice(0, 8).map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim()) : [],
+  });
+
   // ── 4. Primary path: find option in the UNFILTERED open list ─────────────
   // Greenhouse, Lever, Ashby and most ATSes show ALL options when the menu
   // first opens. Finding the match here means we never call writeValue at all:
@@ -382,6 +486,7 @@ export async function fillCombobox(
     if (cachedText) pick = opts.find((_o, i) => optTexts[i] === cachedText);
 
     if (!pick) pick = opts.find(o => optionMatches(o, aliases));
+    diag('fillCombobox primary pick', { found: !!pick, pickText: pick ? (pick.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) : null });
     if (pick) {
       const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
       const ok = await clickOption(el, pick, listbox);
@@ -441,20 +546,25 @@ export async function fillCombobox(
     }
   }
 
-  // ── 7. Keyboard fallback ──────────────────────────────────────────────────
-  // Last resort: navigate to first option with ArrowDown and commit with Enter.
-  dispatchKey(el, 'ArrowDown');
-  await sleep(60);
-  dispatchKey(el, 'Enter');
-  await sleep(100);
-
-  const committed = getComboboxDisplayValue(el).length > 0;
-  if (committed) { markFilled(el); return true; }
-
-  // Every path exhausted. Snapshot whatever options were visible so the
-  // failure log is actionable, then mark the field FILL_FAILED.
+  // ── 7. No genuine match — do NOT blind-select ────────────────────────────
+  // Previously we did ArrowDown+Enter here, which blindly committed the FIRST
+  // option (e.g. "United States" or "Yes") regardless of correctness. That
+  // produced wrong fills — a yes/no question matched to `country` would get
+  // a country name. Selecting the wrong option is worse than not filling.
+  //
+  // Instead: clear any filter text we typed in step 5 (so we never leave
+  // "United States" sitting in a field whose real options are [Yes, No]),
+  // close the menu, and report FILL_FAILED for visible feedback.
   const finalListbox = findListbox(el);
   const finalOptions = finalListbox ? getOptions(finalListbox).map(o => (o.textContent ?? '').trim()) : [];
+
+  if (!el.readOnly && (el.value ?? '').length > 0) {
+    writeValue(el, '');          // clear the typed filter text
+    await sleep(40);
+  }
+  dispatchKey(el, 'Escape');     // close the menu without committing anything
+  await sleep(40);
+
   markFillFailed(el, value, finalOptions);
   return false;
 }
@@ -484,6 +594,12 @@ export async function fillButtonDropdown(
       : hasValueAliases(canonicalKey)
         ? expandValueAliases(canonicalKey, value)
         : [value];
+
+  diag('fillButtonDropdown ENTER', {
+    tag: el.tagName, role: el.getAttribute('role'),
+    class: (el.getAttribute('class') ?? '').slice(0, 80),
+    value, canonicalKey, aliases,
+  });
 
   // ── 1. Click the trigger to open the panel ───────────────────────────────
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
@@ -525,6 +641,8 @@ export async function fillButtonDropdown(
   }
 
   if (!panel) {
+    diag('fillButtonDropdown: NO PANEL found via known selectors ([role=listbox], ul.country-list). Dumping DOM:');
+    diagDumpPanels();
     markFillFailed(el, value, []);
     return false;
   }
@@ -536,15 +654,24 @@ export async function fillButtonDropdown(
 
   const optionTexts = options.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
 
+  diag('fillButtonDropdown PANEL found', {
+    panelTag: panel.tagName, panelClass: (panel.getAttribute('class') ?? '').slice(0, 80),
+    optionCount: options.length, optionsSample: optionTexts.slice(0, 20),
+  });
+
   // Cache 3 — option-resolution lookup. If we (or another site with the same
   // option set) resolved this value before, pick that option directly.
   let pick: HTMLElement | undefined;
   const cachedText = await getResolvedOption(optionTexts, value);
   if (cachedText) {
     pick = options.find((_o, i) => optionTexts[i] === cachedText);
+    diag('fillButtonDropdown cache3', { cachedText, hit: !!pick });
   }
 
-  if (!pick) pick = options.find(o => optionMatches(o, aliases));
+  if (!pick) {
+    pick = options.find(o => optionMatches(o, aliases));
+    diag('fillButtonDropdown alias match', { aliases, hit: !!pick, pickText: pick ? (pick.textContent ?? '').trim() : null });
+  }
 
   // Phase A.4 — embedding fallback when alias matching returns nothing.
   // Skipped automatically inside selectOptionByEmbedding for very large

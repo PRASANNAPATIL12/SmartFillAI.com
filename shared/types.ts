@@ -44,6 +44,11 @@ export interface ProfileEntry {
 
   /** Usage statistics */
   use_count: number;
+
+  /** Priority rank among entries sharing the same canonical_key.
+   *  0 = default (filled first). Higher = lower priority.
+   *  Old entries without this field are treated as 0 at runtime. */
+  priority: number;
 }
 
 export interface Profile {
@@ -124,6 +129,9 @@ export interface MatchResult {
 
   /** If FILE_UPLOAD: which document type is expected */
   docType?: DocumentType;
+
+  /** How many valid alternatives exist for this field (including the matched default) */
+  alternativeCount?: number;
 }
 
 // ============================================================================
@@ -185,6 +193,7 @@ export interface ResumeParseResult {
   }>;
   skills: string[];
   certifications: string[];
+  full_text?: string;
 }
 
 // ============================================================================
@@ -327,6 +336,8 @@ export const STORAGE_KEYS = {
   DOCUMENTS_META_CACHE: 'documents_meta_cache_v1',
   /** Option-resolution cache (Cache 3): hash(option-set)::value → chosen option text. */
   OPTION_RESOLUTION_CACHE: 'option_resolution_cache_v1',
+  /** Question→answer memory: normalized question text → the option the user picked. */
+  QA_CACHE: 'qa_cache_v1',
 } as const;
 
 // ============================================================================
@@ -363,6 +374,16 @@ export type MessageType =
   | 'GET_SESSION'
   // Step 6 LLM classifier (Task 8.1)
   | 'STEP6_CLASSIFY'
+  // Final tier — LLM answers a form question from profile + resume
+  | 'ANSWER_FIELD'
+  // Fuzzy Q→A matching (question embeddings)
+  | 'STORE_QA_EMBEDDING'
+  | 'FUZZY_QA_MATCH'
+  // Multi-value alternatives
+  | 'GET_ALTERNATIVES'
+  | 'ADD_ALTERNATIVE'
+  | 'SET_DEFAULT_ENTRY'
+  | 'CHECK_DUPLICATE_VALUE'
   // Documents
   | 'GET_DOCUMENTS'
   | 'GET_DOCUMENT_BYTES'

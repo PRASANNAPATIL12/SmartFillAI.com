@@ -228,6 +228,58 @@ function ensureHost(): ShadowRoot {
       font-family: inherit;
     }
     .sfa-banner-secondary:hover { background: #e2e8f0; }
+
+    /* ── Update-or-Add pill ── */
+    .pill.update-or-add { gap: 4px; }
+    .pill.update-or-add .pill-btn {
+      padding: 2px 8px; border-radius: 4px; font-size: 11px;
+      font-weight: 600; cursor: pointer; border: none;
+      transition: background 0.15s; line-height: 1.4;
+    }
+    .pill.update-or-add .btn-update {
+      background: rgba(255,255,255,0.2); color: #fff;
+    }
+    .pill.update-or-add .btn-update:hover { background: rgba(255,255,255,0.35); }
+    .pill.update-or-add .btn-add {
+      background: #fff; color: #d97706;
+    }
+    .pill.update-or-add .btn-add:hover { background: #fef3c7; }
+
+    /* ── Alternatives panel ── */
+    .alts-panel {
+      position: fixed;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+      font-family: system-ui, -apple-system, sans-serif;
+      pointer-events: all; overflow: hidden;
+      min-width: 200px; max-width: 320px;
+      z-index: 3;
+      animation: fadein 0.15s ease forwards;
+    }
+    .alts-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 12px; border-bottom: 1px solid #f1f5f9;
+      font-size: 12px; font-weight: 600; color: #334155;
+    }
+    .alts-close {
+      background: none; border: none; cursor: pointer;
+      font-size: 16px; color: #94a3b8; padding: 0; line-height: 1;
+    }
+    .alts-close:hover { color: #475569; }
+    .alts-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; cursor: pointer;
+      font-size: 13px; color: #475569;
+      transition: background 0.1s;
+    }
+    .alts-row:hover { background: #f8fafc; }
+    .alts-row.active { background: #eff6ff; color: #1e40af; font-weight: 500; cursor: default; }
+    .alts-check { width: 16px; text-align: center; font-size: 12px; color: #4f46e5; }
+    .alts-value { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .alts-default {
+      font-size: 10px; background: #e0e7ff; color: #4338ca;
+      padding: 1px 6px; border-radius: 4px; font-weight: 500;
+    }
   `;
   shadow.appendChild(style);
   document.documentElement.appendChild(host);
@@ -532,4 +584,143 @@ function escapeHtml(str: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+// ── Update-or-Add pill ─────────────────────────────────────────────────────
+
+export interface UpdateOrAddTarget {
+  el:       HTMLElement;
+  label:    string;
+  oldValue: string;
+  newValue: string;
+  onUpdate: () => void;
+  onAdd:    () => void;
+}
+
+let _uoaPillTimer: ReturnType<typeof setTimeout> | undefined;
+
+export function showUpdateOrAddPill(target: UpdateOrAddTarget): void {
+  clearTimeout(_hideTimer);
+  clearTimeout(_uoaPillTimer);
+
+  const sh  = ensureHost();
+  const pel = ensurePill(sh);
+
+  _activePillCallback = null;
+  pel.className = 'pill learn update-or-add';
+  pel.innerHTML = `
+    <span class="icon">💡</span>
+    <span class="label">${escapeHtml(truncate(target.label, 18))}</span>
+    <span class="sep">·</span>
+    <span class="value">${escapeHtml(truncate(target.newValue, 10))}</span>
+    <button class="pill-btn btn-update" data-action="update">Update</button>
+    <button class="pill-btn btn-add" data-action="add">+ Add</button>
+  `;
+
+  pel.querySelector('.btn-update')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    target.onUpdate();
+    hidePill();
+  });
+  pel.querySelector('.btn-add')?.addEventListener('click', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    target.onAdd();
+    hidePill();
+  });
+
+  positionPill(target.el);
+  _uoaPillTimer = setTimeout(hidePill, 8000);
+}
+
+// ── Alternatives panel ─────────────────────────────────────────────────────
+
+export interface AlternativeEntry {
+  id:         string;
+  value:      string;
+  isDefault:  boolean;
+  sensitive?: boolean;
+}
+
+let _altsPanelEl: HTMLElement | null = null;
+let _altsOutsideHandler: ((e: MouseEvent) => void) | null = null;
+let _altsEscHandler:     ((e: KeyboardEvent) => void) | null = null;
+
+export function showAlternativesPanel(
+  fieldEl:  HTMLElement,
+  label:    string,
+  entries:  AlternativeEntry[],
+  onSelect: (entryId: string, value: string) => void,
+): void {
+  hideAlternativesPanel();
+  if (entries.length < 2) return;
+
+  const sh = ensureHost();
+  const panel = document.createElement('div');
+  panel.id = 'ditto-alts-panel';
+  panel.className = 'alts-panel';
+
+  const header = document.createElement('div');
+  header.className = 'alts-header';
+  header.innerHTML = `
+    <span>${escapeHtml(truncate(label, 28))}</span>
+    <button class="alts-close">×</button>
+  `;
+  header.querySelector('.alts-close')!.addEventListener('click', hideAlternativesPanel);
+  panel.appendChild(header);
+
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = `alts-row${entry.isDefault ? ' active' : ''}`;
+    const displayVal = entry.sensitive ? '••••••' : truncate(entry.value, 40);
+    row.innerHTML = `
+      <span class="alts-check">${entry.isDefault ? '✓' : ''}</span>
+      <span class="alts-value">${escapeHtml(displayVal)}</span>
+      ${entry.isDefault ? '<span class="alts-default">default</span>' : ''}
+    `;
+    if (!entry.isDefault) {
+      row.addEventListener('click', () => {
+        onSelect(entry.id, entry.value);
+        hideAlternativesPanel();
+      });
+    }
+    panel.appendChild(row);
+  }
+
+  // Position below the field
+  const rect = fieldEl.getBoundingClientRect();
+  const vw = document.documentElement.clientWidth;
+  const panelWidth = 280;
+  Object.assign(panel.style, {
+    top:  `${rect.bottom + 4}px`,
+    left: `${Math.max(8, Math.min(rect.left, vw - panelWidth - 8))}px`,
+  });
+
+  sh.appendChild(panel);
+  _altsPanelEl = panel;
+
+  // Dismiss on outside click (setTimeout so the opening click doesn't dismiss)
+  setTimeout(() => {
+    _altsOutsideHandler = (e: MouseEvent) => {
+      if (!_altsPanelEl?.contains(e.target as Node)) hideAlternativesPanel();
+    };
+    document.addEventListener('click', _altsOutsideHandler, true);
+  }, 50);
+
+  _altsEscHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') hideAlternativesPanel();
+  };
+  document.addEventListener('keydown', _altsEscHandler, true);
+}
+
+export function hideAlternativesPanel(): void {
+  _altsPanelEl?.remove();
+  _altsPanelEl = null;
+  if (_altsOutsideHandler) {
+    document.removeEventListener('click', _altsOutsideHandler, true);
+    _altsOutsideHandler = null;
+  }
+  if (_altsEscHandler) {
+    document.removeEventListener('keydown', _altsEscHandler, true);
+    _altsEscHandler = null;
+  }
 }

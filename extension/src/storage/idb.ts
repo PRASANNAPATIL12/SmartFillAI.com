@@ -13,10 +13,11 @@ import type { FieldCacheEntry, DocumentType, StoredDocument, DocumentMeta } from
 export type { FieldCacheEntry };
 
 const DB_NAME = 'ditto_v1';
-const DB_VERSION = 2;
-const STORE_FIELD_CACHE = 'field_cache';
-const STORE_EMBEDDINGS  = 'embeddings';
-const STORE_DOCUMENTS   = 'documents';
+const DB_VERSION = 3;
+const STORE_FIELD_CACHE    = 'field_cache';
+const STORE_EMBEDDINGS     = 'embeddings';
+const STORE_DOCUMENTS      = 'documents';
+const STORE_QA_EMBEDDINGS  = 'qa_embeddings';
 
 let _db: IDBDatabase | null = null;
 
@@ -40,6 +41,10 @@ function openDB(): Promise<IDBDatabase> {
         const docs = db.createObjectStore(STORE_DOCUMENTS, { keyPath: 'id' });
         docs.createIndex('docType', 'docType', { unique: false });
         docs.createIndex('userId', 'userId', { unique: false });
+      }
+
+      if (oldVersion < 3) {
+        db.createObjectStore(STORE_QA_EMBEDDINGS, { keyPath: 'question' });
       }
     };
 
@@ -212,4 +217,40 @@ export async function updateDocumentMeta(
   const updated = { ...doc, ...patch, updatedAt: Date.now() };
   await idbPut(STORE_DOCUMENTS, updated);
   return stripFileData(updated);
+}
+
+// ── QA Embeddings (fuzzy question matching) ──────────────────────────────────
+
+export interface StoredQAEmbedding {
+  question: string;     // normalized question text (the key)
+  vector: number[];     // MiniLM embedding of the question
+  computedAt: number;
+}
+
+export async function saveQaEmbedding(question: string, vector: number[]): Promise<void> {
+  return idbPut<StoredQAEmbedding>(STORE_QA_EMBEDDINGS, {
+    question, vector, computedAt: Date.now(),
+  });
+}
+
+export async function getQaEmbedding(question: string): Promise<StoredQAEmbedding | undefined> {
+  return idbGet<StoredQAEmbedding>(STORE_QA_EMBEDDINGS, question);
+}
+
+export async function getAllQaEmbeddings(): Promise<StoredQAEmbedding[]> {
+  return idbGetAll<StoredQAEmbedding>(STORE_QA_EMBEDDINGS);
+}
+
+export async function deleteQaEmbedding(question: string): Promise<void> {
+  return idbDelete(STORE_QA_EMBEDDINGS, question);
+}
+
+export async function clearAllQaEmbeddings(): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx  = db.transaction(STORE_QA_EMBEDDINGS, 'readwrite');
+    const req = tx.objectStore(STORE_QA_EMBEDDINGS).clear();
+    req.onsuccess = () => resolve();
+    req.onerror   = () => reject(req.error);
+  });
 }

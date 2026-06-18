@@ -134,5 +134,6 @@ export type AIOperation =
   | 'resume_parse'
   | 'essay_generate'
   | 'field_classify'
+  | 'answer_field'
   | 'key_suggest'
   | 'company_research';

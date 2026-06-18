@@ -23,7 +23,10 @@ import { expandValueAliases, hasValueAliases } from './value-aliases';
 /** Shape validators per canonical_key. Returning true means the value is structurally sane. */
 const VALIDATORS: Record<string, (value: string) => boolean> = {
   phone_country_code: v => /^\+?\d{1,4}$/.test(v.trim()),
-  country:            v => resolveCountry(v) !== null,
+  // A country entry must be a NAME (or ISO code), never a bare calling code.
+  // "+1"/"+91" here means the widget's collapsed display was mis-captured —
+  // reject so it heals away and gets re-learned from the clicked option text.
+  country:            v => !/^\+?\d{1,4}$/.test(v.trim()) && resolveCountry(v) !== null,
   email:              v => /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(v.trim()),
   phone_number:       v => {
     const digits = v.replace(/\D/g, '');

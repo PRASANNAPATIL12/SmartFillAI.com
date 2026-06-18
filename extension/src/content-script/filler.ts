@@ -71,15 +71,18 @@ export async function fillElement(
     // Button-triggered custom dropdown (phone country code pickers, etc.)
     if (el instanceof HTMLButtonElement || el.getAttribute('role') === 'button' ||
         (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT')) {
+      console.log('[SFA-DIAG] fillElement → fillButtonDropdown', { tag: el.tagName, role: el.getAttribute('role'), value, canonicalKey });
       return await fillButtonDropdown(el, value, canonicalKey);
     }
 
     if (el instanceof HTMLSelectElement) {
+      console.log('[SFA-DIAG] fillElement → fillSelect', { value, canonicalKey, optionCount: el.options.length });
       return await fillSelect(el, value, canonicalKey);
     }
 
     // ARIA combobox / custom dropdown — needs the type-then-click recipe
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && isCombobox(el)) {
+      console.log('[SFA-DIAG] fillElement → fillCombobox', { value, canonicalKey });
       return await fillCombobox(el, value, canonicalKey);
     }
 

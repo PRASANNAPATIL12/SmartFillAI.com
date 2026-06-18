@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import type { DocumentMeta, ProfileEntry } from '@shared/types';
 import type { AIProviderName } from '@/ai-providers';
 import { sendToBackground, sendToActiveTab } from '../utils/messages';
+import { getAllQAEntries } from '@/content-script/qa-cache';
 import { CATEGORY_LABELS, type EntryCategory } from '../utils/canonicalKeys';
 
 interface SessionInfo {
@@ -16,6 +17,7 @@ interface Props {
   onGoProfile:   () => void;
   onGoSettings:  () => void;
   onGoDocuments: () => void;
+  onGoAnswers:   () => void;
   onGoLogin:     () => void;
   onSignOut:     () => void;
 }
@@ -23,10 +25,11 @@ interface Props {
 type FillState = 'idle' | 'filling' | 'done' | 'error';
 
 export default function HomeScreen({
-  provider, session, onGoProfile, onGoSettings, onGoDocuments, onGoLogin, onSignOut,
+  provider, session, onGoProfile, onGoSettings, onGoDocuments, onGoAnswers, onGoLogin, onSignOut,
 }: Props): React.ReactElement {
   const [entries,    setEntries]    = useState<ProfileEntry[]>([]);
   const [docCount,   setDocCount]   = useState(0);
+  const [answerCount, setAnswerCount] = useState(0);
   const [fillState,  setFillState]  = useState<FillState>('idle');
   const [fillResult, setFillResult] = useState<{ filled: number; skipped: number } | null>(null);
   const [fillError,  setFillError]  = useState('');
@@ -39,6 +42,9 @@ export default function HomeScreen({
     sendToBackground<DocumentMeta[]>('GET_DOCUMENTS')
       .then(docs => setDocCount(docs.length))
       .catch(() => setDocCount(0));
+    getAllQAEntries()
+      .then(entries => setAnswerCount(entries.length))
+      .catch(() => setAnswerCount(0));
   }, []);
 
   const handleFill = useCallback(async () => {
@@ -208,6 +214,31 @@ export default function HomeScreen({
               className="w-full flex items-center justify-between bg-slate-50 hover:bg-slate-100 rounded-xl px-3 py-2 transition-colors">
               <span className="text-xs text-slate-600">
                 {docCount} document{docCount !== 1 ? 's' : ''} ready
+              </span>
+              <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+        {/* Answers */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Answers</span>
+            <button onClick={onGoAnswers} className="text-xs text-sky-500 hover:underline">
+              {answerCount === 0 ? 'View' : 'Review'}
+            </button>
+          </div>
+          {answerCount === 0 ? (
+            <div className="bg-slate-50 rounded-xl p-3 text-center">
+              <p className="text-xs text-slate-400">Remembered answers to form questions will appear here.</p>
+            </div>
+          ) : (
+            <button onClick={onGoAnswers}
+              className="w-full flex items-center justify-between bg-slate-50 hover:bg-slate-100 rounded-xl px-3 py-2 transition-colors">
+              <span className="text-xs text-slate-600">
+                {answerCount} remembered answer{answerCount !== 1 ? 's' : ''}
               </span>
               <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />

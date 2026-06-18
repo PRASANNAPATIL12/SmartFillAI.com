@@ -12,6 +12,8 @@ import { pushSyncQueue, pullFromCloud } from './sync-engine';
 import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
 import { generateEssay } from './essay-generator';
 import { classifyFields, type FieldClassifySpec } from './llm-classifier';
+import { answerField } from './answer-field';
+import { clearLlmAnswers, normalizeQuestion, getRememberedAnswer } from '../content-script/qa-cache';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -29,6 +31,12 @@ import {
   deleteEntry,
   recordUse,
   replaceAll,
+  healProfile,
+  getEntriesByKey,
+  countByKey,
+  hasDuplicateValue,
+  setAsDefault,
+  getMaxAlternatives,
   type NewEntryData,
   type EntryPatch,
 } from './profile-store';
@@ -49,6 +57,8 @@ import {
   getDefaultDocument,
   deleteDocument,
   updateDocumentMeta,
+  saveQaEmbedding,
+  getAllQaEmbeddings,
 } from '@/storage/idb';
 
 // ── Alarm names ───────────────────────────────────────────────────────────────
@@ -151,6 +161,13 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   // ── Profile CRUD ───────────────────────────────────────────────────────────
 
   GET_PROFILE: async () => {
+    // Self-heal: purge corrupted/junk entries left by earlier builds before
+    // handing the profile to the content script. Cheap (one filter); only
+    // writes when something was actually removed.
+    const healed = await healProfile();
+    if (healed.removed > 0) {
+      console.log('[SmartFillAI] healProfile removed', healed.removed, 'corrupt/junk entries');
+    }
     return getAllEntries();
   },
 
@@ -160,6 +177,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const created = await addEntry(data, userId);
     embedEntry(created).catch(() => {});
     refreshCSCache().catch(() => {});
+    clearLlmAnswers().catch(() => {});
     return created;
   },
 
@@ -171,6 +189,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       embedEntry(updated).catch(() => {});
     }
     refreshCSCache().catch(() => {});
+    if (patch.value) clearLlmAnswers().catch(() => {});
     return updated;
   },
 
@@ -178,6 +197,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const { id } = payload as { id: string };
     const ok = await deleteEntry(id);
     refreshCSCache().catch(() => {});
+    clearLlmAnswers().catch(() => {});
     return ok;
   },
 
@@ -325,6 +345,100 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     return classifyFields(specs);
   },
 
+  // Final waterfall tier — LLM answers a form question using profile + resume.
+  // Only called by the content script after exact / Q→A / embedding all miss.
+  ANSWER_FIELD: async (payload) => {
+    const { question, options } = payload as { question: string; options?: string[] };
+    return answerField(question, Array.isArray(options) ? options : []);
+  },
+
+  STORE_QA_EMBEDDING: async (payload) => {
+    const { question } = payload as { question: string };
+    const nq = normalizeQuestion(question);
+    if (nq.length < 6) return { ok: false };
+    try {
+      const vector = await computeEmbedding(nq);
+      await saveQaEmbedding(nq, Array.from(vector));
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  },
+
+  FUZZY_QA_MATCH: async (payload) => {
+    const { question } = payload as { question: string };
+    const nq = normalizeQuestion(question);
+    if (nq.length < 6) return { answer: null };
+    try {
+      const queryVec = await computeEmbedding(nq);
+      const allEmbeddings = await getAllQaEmbeddings();
+      if (allEmbeddings.length === 0) return { answer: null };
+
+      let bestSim = 0;
+      let bestQ = '';
+      for (const entry of allEmbeddings) {
+        if (entry.question === nq) continue;
+        const sim = cosineSimilarity(
+          Array.from(queryVec),
+          entry.vector
+        );
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestQ = entry.question;
+        }
+      }
+
+      if (bestSim < 0.82 || !bestQ) return { answer: null };
+
+      const answer = await getRememberedAnswer(bestQ);
+      return { answer, similarity: bestSim, matchedQuestion: bestQ };
+    } catch {
+      return { answer: null };
+    }
+  },
+
+  // ── Multi-value alternatives ─────────────────────────────────────────────
+
+  GET_ALTERNATIVES: async (payload) => {
+    const { canonicalKey } = payload as { canonicalKey: string };
+    return getEntriesByKey(canonicalKey);
+  },
+
+  ADD_ALTERNATIVE: async (payload) => {
+    const { canonicalKey, value, displayLabel, category } = payload as {
+      canonicalKey: string; value: string; displayLabel: string; category: string;
+    };
+    const count = await countByKey(canonicalKey);
+    if (count >= getMaxAlternatives()) throw new Error('Maximum alternatives reached');
+    const userId = (await getCurrentUserId()) ?? '';
+    const data: NewEntryData = {
+      canonical_key: canonicalKey,
+      display_label: displayLabel,
+      aliases:       [],
+      value,
+      category,
+      source:        'learned',
+      sensitive:     false,
+    };
+    const created = await addEntry(data, userId);
+    embedEntry(created).catch(() => {});
+    refreshCSCache().catch(() => {});
+    clearLlmAnswers().catch(() => {});
+    return created;
+  },
+
+  SET_DEFAULT_ENTRY: async (payload) => {
+    const { entryId } = payload as { entryId: string };
+    await setAsDefault(entryId);
+    refreshCSCache().catch(() => {});
+    return { ok: true };
+  },
+
+  CHECK_DUPLICATE_VALUE: async (payload) => {
+    const { canonicalKey, value } = payload as { canonicalKey: string; value: string };
+    return hasDuplicateValue(canonicalKey, value);
+  },
+
   MATCH_FIELDS: () => {
     throw new Error('MATCH_FIELDS is handled in the content script (Task 4.1)');
   },
@@ -341,6 +455,14 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const trimmed = value.length > 500 ? value.slice(0, 500) : value;
 
     const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
+
+    // Refuse junk canonical keys (mis-learned form field names like
+    // "question_36872262002[]" from EEO checkbox groups). These pollute the
+    // profile and never represent real user data.
+    if (/\[\]|^question_|^field[_-]?\d/i.test(canonicalKey)) {
+      throw new Error(`Refusing to learn junk canonical key "${canonicalKey}"`);
+    }
+
     // Normalize country values: strip emoji flags and calling-code suffixes,
     // resolve to canonical country name ("🇮🇳 India +91" → "India").
     const normalizedTrimmed = normalizeFieldValue(canonicalKey, trimmed);
@@ -348,21 +470,27 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const displayLabel = inferDisplayLabel(sig);
     const userId       = (await getCurrentUserId()) ?? '';
 
-    // STEP 7.1 — Duplicate prevention. If the profile already has an entry
-    // with this canonical_key, UPDATE its value instead of creating a second
-    // entry. This is the proper "change of mind" handling — user picks
-    // "India" then later "United States" for the same Country field should
-    // result in ONE entry, not two.
-    const existing = (await getAllEntries()).find(e => e.canonical_key === canonicalKey);
-    if (existing) {
-      if (existing.value === normalizedTrimmed) return existing; // no-op
-      const updated = await updateEntry(existing.id, { value: normalizedTrimmed });
-      if (updated) {
-        embedEntry(updated).catch(() => {});
-        refreshCSCache().catch(() => {});
-        return updated;
-      }
-      // Fall through to create only if update somehow failed
+    // Multi-value aware: if the profile already has entries with this
+    // canonical_key, check for duplicates and signal the content script
+    // to show the Update-or-Add prompt instead of silently overwriting.
+    const allForKey = await getEntriesByKey(canonicalKey);
+    if (allForKey.length > 0) {
+      const isDuplicate = allForKey.some(
+        e => e.value.trim().toLowerCase() === normalizedTrimmed.trim().toLowerCase(),
+      );
+      if (isDuplicate) return allForKey[0]; // no-op — value already stored
+
+      const count = allForKey.length;
+      return {
+        action: 'ASK_UPDATE_OR_ADD' as const,
+        existingEntry: allForKey[0],
+        newValue: normalizedTrimmed,
+        count,
+        maxAlternatives: getMaxAlternatives(),
+        canonicalKey,
+        displayLabel,
+        category,
+      };
     }
 
     const data: NewEntryData = {
@@ -469,13 +597,13 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       try {
         if (mimeType === 'application/pdf') {
           const parsed = await parseResumePdf(fileDataBase64);
-          extractedText = JSON.stringify(parsed);
+          extractedText = parsed.full_text || JSON.stringify(parsed);
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         } else if (mimeType === 'text/plain') {
           const text = new TextDecoder().decode(bytes);
           const parsed = await parseResumeText(text);
-          extractedText = text;
+          extractedText = parsed.full_text || text;
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
@@ -501,6 +629,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
     await saveDocument(doc);
     refreshDocumentsMetaCache().catch(() => {});
+    if (docType === 'resume') clearLlmAnswers().catch(() => {});
 
     const { fileData: _, ...meta } = doc;
     return meta;
@@ -508,19 +637,18 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
   UPDATE_DOCUMENT_META: async (payload) => {
     const { id, patch } = payload as { id: string; patch: { label?: string; isDefault?: boolean } };
-    if (patch.isDefault) {
-      const doc = await getDocumentMeta(id);
-      if (doc) {
-        const all = await getAllDocumentMetas();
-        for (const other of all) {
-          if (other.docType === doc.docType && other.id !== id && other.isDefault) {
-            await updateDocumentMeta(other.id, { isDefault: false });
-          }
+    const docMeta = await getDocumentMeta(id);
+    if (patch.isDefault && docMeta) {
+      const all = await getAllDocumentMetas();
+      for (const other of all) {
+        if (other.docType === docMeta.docType && other.id !== id && other.isDefault) {
+          await updateDocumentMeta(other.id, { isDefault: false });
         }
       }
     }
     const updated = await updateDocumentMeta(id, patch);
     refreshDocumentsMetaCache().catch(() => {});
+    if (patch.isDefault && docMeta?.docType === 'resume') clearLlmAnswers().catch(() => {});
     return updated;
   },
 
@@ -546,7 +674,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       try {
         if (mimeType === 'application/pdf') {
           const parsed = await parseResumePdf(fileDataBase64);
-          extractedText = JSON.stringify(parsed);
+          extractedText = parsed.full_text || JSON.stringify(parsed);
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
@@ -563,14 +691,17 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       updatedAt: Date.now(),
     });
     refreshDocumentsMetaCache().catch(() => {});
+    if (existing.docType === 'resume') clearLlmAnswers().catch(() => {});
 
     return getDocumentMeta(id);
   },
 
   DELETE_DOCUMENT: async (payload) => {
     const { id } = payload as { id: string };
+    const meta = await getDocumentMeta(id);
     await deleteDocument(id);
     refreshDocumentsMetaCache().catch(() => {});
+    if (meta?.docType === 'resume') clearLlmAnswers().catch(() => {});
     return { ok: true };
   },
 
