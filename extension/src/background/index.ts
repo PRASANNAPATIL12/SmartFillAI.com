@@ -348,8 +348,9 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   // Final waterfall tier — LLM answers a form question using profile + resume.
   // Only called by the content script after exact / Q→A / embedding all miss.
   ANSWER_FIELD: async (payload) => {
-    const { question, options } = payload as { question: string; options?: string[] };
-    return answerField(question, Array.isArray(options) ? options : []);
+    const { question, options, company, seedAnswer } =
+      payload as { question: string; options?: string[]; company?: string; seedAnswer?: string };
+    return answerField(question, Array.isArray(options) ? options : [], { company, seedAnswer });
   },
 
   STORE_QA_EMBEDDING: async (payload) => {

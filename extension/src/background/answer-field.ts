@@ -47,12 +47,22 @@ function profileSnippet(entries: ProfileEntry[]): string {
     .slice(0, 2000);
 }
 
+export interface AnswerOpts {
+  /** Detected employer name, injected so narrative answers name the right company. */
+  company?: string;
+  /** A prior answer to a similar question — adapted to `company` instead of answered cold. */
+  seedAnswer?: string;
+}
+
 export async function answerField(
   question: string,
-  options: string[] = []
+  options: string[] = [],
+  opts: AnswerOpts = {}
 ): Promise<AnswerResult> {
   const q = (question || '').trim();
   if (!q) return { answer: null, confidence: 0 };
+  const company = (opts.company || '').trim();
+  const seedAnswer = (opts.seedAnswer || '').trim();
 
   const [provider, entries, cfg] = await Promise.all([
     AIProviderFactory.getProvider(),
@@ -70,11 +80,24 @@ export async function answerField(
     ? `Options (choose exactly one, verbatim):\n${options.map(o => `- ${o}`).join('\n')}\n\n`
     : '';
 
+  const companyLine = company ? `Company being applied to: ${company}\n` : '';
+
+  // When the candidate answered a similar question before, adapt that prior
+  // answer to THIS company rather than writing from scratch. Keeps their real
+  // substance; only swaps company-specific references.
+  const seedBlock = seedAnswer
+    ? `\nThe candidate previously gave this answer to a similar question. Rewrite it to fit ` +
+      `${company || 'this company'}: keep every fact and the candidate's own voice, update any ` +
+      `company-specific references, invent nothing new:\n"""\n${seedAnswer.slice(0, 1200)}\n"""\n`
+    : '';
+
   const prompt =
+    companyLine +
     `Question: ${q}\n\n` +
     optionsBlock +
     `Candidate profile:\n${profileSnippet(entries) || '(none)'}\n\n` +
-    (resumeText ? `Resume:\n${resumeText}\n` : `Resume: (none provided)\n`);
+    (resumeText ? `Resume:\n${resumeText}\n` : `Resume: (none provided)\n`) +
+    seedBlock;
 
   let response;
   try {

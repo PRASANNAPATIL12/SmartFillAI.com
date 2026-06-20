@@ -20,6 +20,8 @@ import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
 import { fillElement, fillFileInput } from './filler';
 import { resolveHandler } from './field-handlers/registry';
+import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
+import { detectCompany } from './company-detector';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen } from './overlay';
@@ -851,6 +853,15 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
     if (!remembered) continue;
 
+    // Narrative answers (essays, "why us") must be tailored to THIS company —
+    // don't paste the prior employer's wording verbatim. When a company is
+    // detectable, defer to the LLM tier, which re-synthesizes using this
+    // remembered answer as a seed. Factual answers always replay verbatim.
+    if (classifyAnswerKind(label, el) === 'narrative' && detectCompany().name) {
+      diag('qa-replay deferred to synthesis (narrative)', { label: label.slice(0, 50) });
+      continue;
+    }
+
     diag('qa-replay', { label: label.slice(0, 50), remembered, matchSource, kind: isDropdown ? 'dropdown' : 'text' });
     const ok = await fillElement(el, remembered);
     if (ok) filled++;
@@ -861,6 +872,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   // the user has never answered (no qa-cache hit). Gemini answers from the
   // profile + resume; the answer is cached so the NEXT visit is a free qa hit.
   // Capped per fill to bound cost/latency; failures leave the field blank.
+  const companyName = detectCompany().name;
   let llmCalls = 0;
   const LLM_CALL_CAP = 10;
   for (const [el, state] of matchMap) {
@@ -880,10 +892,16 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
                || state.sig.name  || state.sig.id || '';
     if (!label) continue;
-    // Text fields only go to the LLM if they're actually QUESTIONS; a plain
-    // unmatched attribute text field should stay blank (the user will fill +
-    // we learn it), not get an AI guess.
-    if (isText && !isQuestionLikeLabel(label)) continue;
+
+    // Tiered reuse: narrative fields (essays, "why us") synthesize from a prior
+    // answer (seed) adapted to this company; factual fields answer from profile.
+    const kind = classifyAnswerKind(label, el);
+    const seed = (kind === 'narrative' && companyName) ? await getSeedAnswer(label) : null;
+
+    // Text fields only go to the LLM if they're actually QUESTIONS, OR they're
+    // narrative fields we have a seed to adapt. A plain unmatched attribute text
+    // field stays blank (the user fills it and we learn it), not an AI guess.
+    if (isText && !isQuestionLikeLabel(label) && !(kind === 'narrative' && seed)) continue;
 
     // Options for the LLM (so it returns a valid choice verbatim).
     let options: string[] = [];
@@ -899,7 +917,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     let resp: { answer: string | null; confidence: number } | null = null;
     try {
       resp = await sendToBackground<{ answer: string | null; confidence: number }>(
-        'ANSWER_FIELD', { question: label, options }
+        'ANSWER_FIELD', { question: label, options, company: companyName || undefined, seedAnswer: seed || undefined }
       );
       diag('llm-tier response', { label: label.slice(0, 60), answer: resp?.answer, confidence: resp?.confidence });
     } catch (err) {
@@ -912,9 +930,13 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const ok = await fillElement(el, resp.answer);
     if (ok) {
       filled++;
-      // Cache so the next visit skips the LLM (free qa-cache hit).
-      rememberAnswer(label, resp.answer, 'llm').catch(() => {});
-      sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      // Cache factual answers so the next visit is a free qa-cache hit. Do NOT
+      // cache narrative answers: they're company-specific, and re-synthesizing
+      // from the user's ORIGINAL seed each visit avoids company-to-company drift.
+      if (kind !== 'narrative') {
+        rememberAnswer(label, resp.answer, 'llm').catch(() => {});
+        sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      }
     }
   }
 
