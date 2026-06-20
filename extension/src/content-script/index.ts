@@ -1062,7 +1062,15 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   if (el.dataset.dittoListeners === 'true') return;
   el.dataset.dittoListeners = 'true';
 
-  const show = (): void => showPill({ el, entry, result });
+  // Read current state from matchMap at event time — NOT from the closure.
+  // The closure would freeze entry/result at first-attach; matchMap is kept
+  // up-to-date by every learn/update/select path so the pill always shows
+  // the current stored value.
+  const show = (): void => {
+    const cur = matchMap.get(el);
+    if (cur?.entry) showPill({ el, entry: cur.entry, result: cur.result });
+    else showPill({ el, entry, result });
+  };
   const hide = (): void => schedulePillHide(400);
 
   el.addEventListener('mouseenter', show);
