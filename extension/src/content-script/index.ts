@@ -19,6 +19,7 @@ import { STORAGE_KEYS } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
 import { fillElement, fillFileInput } from './filler';
+import { resolveHandler } from './field-handlers/registry';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen } from './overlay';
@@ -1171,11 +1172,10 @@ function tryLearnField(el: HTMLElement): void {
   // their selection as textContent (e.g. "+91" or "🇮🇳 India").
   const isButton = el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
     || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT');
-  const rawValue = comboLike
-    ? getComboboxDisplayValue(el)
-    : isButton
-      ? (el.textContent?.trim() ?? '')
-      : ((el as HTMLInputElement).value ?? '');
+  // Capture the user's value via the field-kind handler. The handler's capture()
+  // maps 1:1 to the previous inline ternary (combobox → display value, button →
+  // textContent, select/text → .value), so behavior is unchanged.
+  const rawValue = resolveHandler(el).capture(el) ?? '';
   const value    = rawValue.trim();
 
   // A combobox/button that reads back as just a calling code ("+1", "+246")

@@ -13,7 +13,7 @@
  *      el.value and syncs its own state.
  */
 
-import { isCombobox, fillCombobox, fillButtonDropdown } from './combobox';
+import { resolveHandler } from './field-handlers/registry';
 import { expandCountryAliases } from './country-aliases';
 import { expandValueAliases, hasValueAliases } from './value-aliases';
 import { selectOptionByEmbedding } from './option-embedding';
@@ -65,63 +65,59 @@ export async function fillElement(
 ): Promise<boolean> {
   if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) return false;
 
-  const before = (el as HTMLInputElement).value ?? '';
-
   try {
-    // Button-triggered custom dropdown (phone country code pickers, etc.)
-    if (el instanceof HTMLButtonElement || el.getAttribute('role') === 'button' ||
-        (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT')) {
-      console.log('[SFA-DIAG] fillElement → fillButtonDropdown', { tag: el.tagName, role: el.getAttribute('role'), value, canonicalKey });
-      return await fillButtonDropdown(el, value, canonicalKey);
-    }
-
-    if (el instanceof HTMLSelectElement) {
-      console.log('[SFA-DIAG] fillElement → fillSelect', { value, canonicalKey, optionCount: el.options.length });
-      return await fillSelect(el, value, canonicalKey);
-    }
-
-    // ARIA combobox / custom dropdown — needs the type-then-click recipe
-    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && isCombobox(el)) {
-      console.log('[SFA-DIAG] fillElement → fillCombobox', { value, canonicalKey });
-      return await fillCombobox(el, value, canonicalKey);
-    }
-
-    const setter =
-      el instanceof HTMLTextAreaElement ? nativeTextareaSetter : nativeInputSetter;
-
-    // STEP 6.1 — Reset React's value tracker so the write is seen as a change
-    resetReactValueTracker(el);
-
-    if (setter) {
-      setter.call(el, value);
-    } else {
-      (el as HTMLInputElement | HTMLTextAreaElement).value = value;
-    }
-
-    // Notify frameworks that the value changed
-    el.dispatchEvent(new Event('input',  { bubbles: true, cancelable: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-
-    el.dataset.dittoFilled = 'true';
-
-    // STEP 6.2 — Post-fill verification. If the value didn't stick (React
-    // reverted, or the input has filters that rejected our write), log it
-    // so we can see in the console and react accordingly.
-    const after = (el as HTMLInputElement).value ?? '';
-    if (after !== value) {
-      console.warn('[SmartFillAI] fill mismatch:', {
-        label: el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?',
-        before, after, expected: value,
-      });
-      // If reverted, we still return true because we did our best. The
-      // ghost-removal still happens. User can retry.
-    }
-
-    return true;
+    // Dispatch by field kind through the handler registry. The registry order
+    // replicates the previous if/else precedence exactly (button-dropdown →
+    // select → combobox → plain text); each handler delegates to the same
+    // underlying fill function it always used.
+    return await resolveHandler(el).fill(el, value, { canonicalKey });
   } catch (err) {
     console.warn('[SmartFillAI] fill threw:', err);
     return false;
   }
+}
+
+/**
+ * Plain <input>/<textarea> value write — the framework-aware setter path.
+ * Extracted verbatim from the old fillElement so the text handler can delegate
+ * to it. Behavior is unchanged: reset React tracker → native setter → dispatch
+ * input/change → mark filled → verify.
+ */
+export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value: string): boolean {
+  const before = (el as HTMLInputElement).value ?? '';
+
+  const setter =
+    el instanceof HTMLTextAreaElement ? nativeTextareaSetter : nativeInputSetter;
+
+  // STEP 6.1 — Reset React's value tracker so the write is seen as a change
+  resetReactValueTracker(el);
+
+  if (setter) {
+    setter.call(el, value);
+  } else {
+    (el as HTMLInputElement | HTMLTextAreaElement).value = value;
+  }
+
+  // Notify frameworks that the value changed
+  el.dispatchEvent(new Event('input',  { bubbles: true, cancelable: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+
+  el.dataset.dittoFilled = 'true';
+
+  // STEP 6.2 — Post-fill verification. If the value didn't stick (React
+  // reverted, or the input has filters that rejected our write), log it
+  // so we can see in the console and react accordingly.
+  const after = (el as HTMLInputElement).value ?? '';
+  if (after !== value) {
+    console.warn('[SmartFillAI] fill mismatch:', {
+      label: el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?',
+      before, after, expected: value,
+    });
+    // If reverted, we still return true because we did our best. The
+    // ghost-removal still happens. User can retry.
+  }
+
+  return true;
 }
 
 /**
@@ -245,7 +241,7 @@ function fillDropzone(el: HTMLElement, file: File): boolean {
   return dropAccepted || !!innerInput;
 }
 
-async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): Promise<boolean> {
+export async function fillSelect(el: HTMLSelectElement, value: string, canonicalKey?: string): Promise<boolean> {
   const options = Array.from(el.options);
   const optionTexts = options.map(o => o.text);
 
