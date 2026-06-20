@@ -1569,16 +1569,19 @@ async function openAlternativesPanel(el: HTMLElement, currentEntry: ProfileEntry
 
     showAlternativesPanel(el, label, entries, (entryId, value) => {
       sendToBackground('SET_DEFAULT_ENTRY', { entryId }).catch(() => {});
-      // Fill the field with the selected value
+      const alt = all.find(e => e.id === entryId);
+      if (!alt) return;
+
+      // Stamp markers BEFORE filling so the post-fill input/change events
+      // don't trigger an Update-or-Add pill for the value we just selected.
+      el.dataset.dittoPreFocusValue   = value;
+      el.dataset.dittoLastLearnedValue = value;
+
+      fillElement(el, value, alt.canonical_key);
+
+      // Keep matchMap in sync (no gate — fill always runs regardless).
       const state = matchMap.get(el);
-      if (state) {
-        const alt = all.find(e => e.id === entryId);
-        if (alt) {
-          fillElement(el, value, alt.canonical_key);
-          matchMap.set(el, { ...state, entry: alt });
-          el.dataset.dittoPreFocusValue = value;
-        }
-      }
+      if (state) matchMap.set(el, { ...state, entry: alt });
     });
   } catch {
     // Background unavailable — skip
