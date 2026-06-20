@@ -21,7 +21,7 @@ import { matchField, fingerprint } from '@/matcher';
 import { fillElement, fillFileInput } from './filler';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
-import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel } from './overlay';
+import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen } from './overlay';
 import type { EssayTarget, AlternativeEntry } from './overlay';
 import {
   showReadyBanner,
@@ -1023,7 +1023,13 @@ function applyHint(
     // openAlternativesPanel is a no-op when count < 2, so safe to wire always.
     if (!el.dataset.dittoAltsWired) {
       el.dataset.dittoAltsWired = 'true';
+      // focus covers Tab-navigation entry; click covers re-clicking a field that
+      // is already focused (the common "I want to change my selection" gesture).
+      // Without the click handler the user must blur then re-click to reopen.
       el.addEventListener('focus', () => openAlternativesPanel(el, entry));
+      el.addEventListener('click', () => {
+        if (!isAlternativesPanelOpen()) openAlternativesPanel(el, entry);
+      });
       el.addEventListener('blur',  () => setTimeout(hideAlternativesPanel, 150));
     }
     // Ghost text preview — show value (masked for sensitive entries).

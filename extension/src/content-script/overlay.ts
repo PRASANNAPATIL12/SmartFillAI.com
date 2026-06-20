@@ -724,6 +724,10 @@ export function showAlternativesPanel(
   document.addEventListener('keydown', _altsEscHandler, true);
 }
 
+export function isAlternativesPanelOpen(): boolean {
+  return _altsPanelEl !== null;
+}
+
 export function hideAlternativesPanel(): void {
   _altsPanelEl?.remove();
   _altsPanelEl = null;
