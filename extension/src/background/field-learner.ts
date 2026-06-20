@@ -51,7 +51,8 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
   [/\bfull.?name\b/i,                                       'full_name'],
   [/\bmiddle.?name\b/i,                                     'middle_name'],
   [/\bphone\b|\btelephone\b|\bmobile\b|\bcel[^l]/i,        'phone_number'],
-  [/\bcompany\b|\borganiz\b|\bemployer\b/i,                'company'],
+  [/current.?company|current.?employer|company.?name|employer.?name|place.?of.?work/i, 'current_company'],
+  [/\bcompany\b|\borganiz\b|\bemployer\b/i,                'current_company'],
   [/\baddress.?(line.?)?2\b|\bapt\b|\bsuite\b|\bunit\b/i,  'address_line2'],
   [/\baddress\b|\bstreet\b/i,                               'address_line1'],
   [/\bzip\b|\bpostal\b/i,                                   'zip_code'],
@@ -83,7 +84,7 @@ const CATEGORY_MAP: Record<string, string> = {
   middle_name: 'identity', date_of_birth: 'identity', gender: 'identity',
   prefix: 'identity', suffix: 'identity',
   university: 'education', degree: 'education', gpa: 'education',
-  company: 'work', job_title: 'work',
+  company: 'work', current_company: 'work', job_title: 'work',
   linkedin_url: 'social', github_url: 'social',
   twitter_handle: 'social', website: 'social',
 };
