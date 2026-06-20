@@ -313,7 +313,8 @@ const RULES: Rule[] = [
 
   // ── Input type signals ───────────────────────────────────────────────────────
   { canonical: 'email',        confidence: 0.98, reason: 'type=email',                    inputType: 'email' },
-  { canonical: 'phone_number', confidence: 0.97, reason: 'type=tel',                      inputType: 'tel' },
+  { canonical: 'phone_number', confidence: 0.97, reason: 'type=tel',                      inputType: 'tel',
+    negativePattern: /\bext(ension)?\b|\bfax\b|\bpager\b|\bdevice/i },
   // type=date alone is ambiguous (start date? DOB? availability?) — use lower confidence
   { canonical: 'date_of_birth',confidence: 0.80, reason: 'type=date (assumed DOB)',        inputType: 'date',
     pattern: /birth|dob|born|age/i },
@@ -342,7 +343,7 @@ const RULES: Rule[] = [
   // ── Phone ────────────────────────────────────────────────────────────────────
   { canonical: 'phone_number', confidence: 0.97, reason: 'pattern: phone/mobile/cell',
     pattern: /\bphone\b|\bmobile\b|\bcell\b|\btelephone\b/i,
-    negativePattern: /interview|screen|call.?to.?action/i },
+    negativePattern: /interview|screen|call.?to.?action|\bext(ension)?\b|\bfax\b|\bpager\b|\bdevice|\btype\b|\bprefer/i },
   { canonical: 'phone_number', confidence: 0.90, reason: 'pattern: contact number',
     pattern: /contact.?number|reach.?you/i },
 

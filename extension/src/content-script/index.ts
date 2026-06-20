@@ -32,7 +32,7 @@ import {
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions } from './combobox';
-import { resolveCountry } from './country-aliases';
+import { resolveCountry, stripCountryCode } from './country-aliases';
 import { validateLearnedValue } from './value-validation';
 import { getRememberedAnswer, rememberAnswer } from './qa-cache';
 
@@ -50,6 +50,22 @@ const matchMap = new Map<HTMLElement, FieldState>();
 let profile: ProfileEntry[] = [];
 let profileLoaded = false;
 let scanTimer: ReturnType<typeof setTimeout> | undefined;
+
+// When the page has a separate phone_country_code field, the phone_number
+// input expects only the local number. Scanning matchMap for a sibling
+// country-code field tells us whether to strip the prefix at fill time.
+function resolvePhoneValue(storedValue: string, canonicalKey: string): string {
+  if (canonicalKey !== 'phone_number') return storedValue;
+  let countryValue: string | null = null;
+  for (const [, s] of matchMap) {
+    if (s.entry?.canonical_key === 'phone_country_code') {
+      countryValue = s.entry.value;
+      break;
+    }
+  }
+  if (!countryValue) return storedValue;
+  return stripCountryCode(storedValue, countryValue);
+}
 let documentsMeta: DocumentMeta[] = [];
 let autoSave = true; // default; overwritten after GET_SETTINGS resolves
 
@@ -780,7 +796,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 
     const ok = await fillElement(
       el,
-      state.entry.value,
+      resolvePhoneValue(state.entry.value, state.entry.canonical_key),
       state.entry.canonical_key
     );
 
@@ -967,7 +983,7 @@ async function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry })
   if (!target.entry) return; // ESSAY pills have no entry
   const ok = await fillElement(
     target.el,
-    target.entry.value,
+    resolvePhoneValue(target.entry.value, target.entry.canonical_key),
     target.entry.canonical_key
   );
   if (ok) {
@@ -1038,7 +1054,7 @@ function applyHint(
     // misleading. Native <select> and button-dropdowns aren't input/textarea
     // so they're already excluded; isCombobox() catches role=combobox inputs.
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)) {
-      const preview = entry.sensitive ? '•••••' : entry.value;
+      const preview = entry.sensitive ? '•••••' : resolvePhoneValue(entry.value, entry.canonical_key);
       const altCount = (result.alternativeCount ?? 1) - 1;
       const suffix = altCount > 0 ? ` (+${altCount})` : '';
       showGhost(el, preview + suffix);
@@ -1585,7 +1601,7 @@ async function openAlternativesPanel(el: HTMLElement, currentEntry: ProfileEntry
       el.dataset.dittoPreFocusValue   = value;
       el.dataset.dittoLastLearnedValue = value;
 
-      fillElement(el, value, alt.canonical_key);
+      fillElement(el, resolvePhoneValue(value, alt.canonical_key), alt.canonical_key);
 
       // Keep matchMap in sync (no gate — fill always runs regardless).
       const state = matchMap.get(el);
@@ -1719,7 +1735,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     fillElement(
       el,
-      state.entry.value,
+      resolvePhoneValue(state.entry.value, state.entry.canonical_key),
       state.entry.canonical_key,
     ).then((ok) => {
       if (ok) sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});

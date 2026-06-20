@@ -133,3 +133,43 @@ export function expandCountryAliases(value: string): string[] {
     `${c.name} (${c.iso2})`,
   ];
 }
+
+/**
+ * Strip the country calling-code prefix from a phone number.
+ *   "+91 94486 77888", "India" → "9448677888"
+ *   "9448677888",      "India" → "9448677888"  (already local)
+ *   "+1 212 555 1234", "US"    → "2125551234"
+ * Returns the digits-only local number, or the original value if the country
+ * is unrecognized or the number doesn't start with the expected code.
+ */
+export function stripCountryCode(phone: string, countryValue: string): string {
+  const c = resolveCountry(countryValue);
+  if (!c) return phone;
+
+  const digits = phone.replace(/\D/g, '');
+  const code   = c.callingCode;
+
+  if (digits.startsWith(code) && digits.length - code.length >= 7) {
+    return digits.slice(code.length);
+  }
+  return digits.length >= 7 ? digits : phone;
+}
+
+/**
+ * Ensure a phone number includes its country calling-code prefix.
+ *   "9448677888",       "India" → "+919448677888"
+ *   "+91 94486 77888",  "India" → "+919448677888"
+ * Returns the original value if the country is unrecognized.
+ */
+export function ensureCountryCode(phone: string, countryValue: string): string {
+  const c = resolveCountry(countryValue);
+  if (!c) return phone;
+
+  const digits = phone.replace(/\D/g, '');
+  const code   = c.callingCode;
+
+  if (digits.startsWith(code) && digits.length - code.length >= 7) {
+    return `+${digits}`;
+  }
+  return `+${code}${digits}`;
+}
