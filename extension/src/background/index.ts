@@ -450,17 +450,26 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     const inferred = inferCanonicalKey(sig);
     if (inferred === '') throw new Error('Sensitive field — will not learn this value');
 
+    // Fields with no recognised canonical key (e.g. "Expected CTC", "Notice period",
+    // bespoke ATS questions) are NOT profile attributes.  Throwing here causes the
+    // content-script's doLearnField catch block to route them to the Q→A cache
+    // instead, keyed by the visible label.  That way they are remembered across
+    // visits without polluting the profile with unusable canonical keys.
+    if (inferred === null) {
+      throw new Error(`Refusing to learn — no standard profile attribute for "${inferDisplayLabel(sig)}"`);
+    }
+
     // STEP 7.3 — Defensive value-length cap. A textarea that snuck through
     // the matcher's essay-detector shouldn't be saved as a profile field;
     // anything > 500 chars is almost certainly the wrong target.
     const trimmed = value.length > 500 ? value.slice(0, 500) : value;
 
-    const canonicalKey = inferred ?? sig.name ?? sig.id ?? 'custom_field';
+    const canonicalKey = inferred;
 
-    // Refuse junk canonical keys (mis-learned form field names like
-    // "question_36872262002[]" from EEO checkbox groups). These pollute the
-    // profile and never represent real user data.
-    if (/\[\]|^question_|^field[_-]?\d/i.test(canonicalKey)) {
+    // Belt-and-suspenders guard against any remaining junk canonical keys
+    // (e.g. bracket-array notation like "application[answers][0][text_value]",
+    // Greenhouse checkbox-group names "question_36872262002[]", etc.).
+    if (/[[\]]|^question_|^field[_-]?\d/i.test(canonicalKey)) {
       throw new Error(`Refusing to learn junk canonical key "${canonicalKey}"`);
     }
 

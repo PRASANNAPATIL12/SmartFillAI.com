@@ -112,6 +112,26 @@ export async function rememberAnswer(
     const normA = a.toLowerCase();
     if (existing.some(e => e.value.toLowerCase() === normA)) return;
 
+    // Progressive multi-select: when the new comma-separated value covers every
+    // token in the current priority-0 answer PLUS more (e.g. the user added a
+    // second checkbox after the first was already learned), replace priority-0
+    // in-place rather than appending as a lower-priority alternative.
+    // This ensures getRememberedAnswer always returns the most-complete selection.
+    const newTokens = normA.split(/[,;|]/g).map(s => s.trim()).filter(Boolean);
+    if (newTokens.length > 1 && existing.length > 0) {
+      const defTokens = existing[0].value.toLowerCase()
+        .split(/[,;|]/g).map(s => s.trim()).filter(Boolean);
+      const isSuperset = defTokens.length > 0
+        && defTokens.every(t => newTokens.includes(t))
+        && newTokens.length > defTokens.length;
+      if (isSuperset) {
+        existing[0] = { value: a, source, priority: 0 };
+        map[nq] = { answers: existing };
+        await chrome.storage.local.set({ [KEY]: map });
+        return;
+      }
+    }
+
     if (existing.length === 0) {
       map[nq] = { answers: [{ value: a, source, priority: 0 }] };
     } else if (existing.length < QA_MAX_ANSWERS) {
