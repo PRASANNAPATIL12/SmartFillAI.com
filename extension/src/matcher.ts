@@ -361,7 +361,7 @@ const RULES: Rule[] = [
   { canonical: 'zip_code', confidence: 0.97, reason: 'pattern: zip/postal code',
     pattern: /\bzip\b|postal.?code|post.?code|pincode|pin.?code/i },
   { canonical: 'phone_country_code', confidence: 0.97, reason: 'pattern: dial/calling code',
-    pattern: /dial.?code|calling.?code|phone.?country/i },
+    pattern: /dial.?code|calling.?code|phone.?country|country.?code\b/i },
   { canonical: 'country', confidence: 0.95, reason: 'pattern: country',
     pattern: /\bcountry\b|\bnation\b/i,
     negativePattern: /nationality|citizenship/i },

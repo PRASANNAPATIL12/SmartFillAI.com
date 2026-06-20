@@ -19,6 +19,9 @@ import { STORAGE_KEYS } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
 import { fillElement, fillFileInput } from './filler';
+import { resolveHandler } from './field-handlers/registry';
+import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
+import { detectCompany } from './company-detector';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen } from './overlay';
@@ -823,10 +826,11 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 
     const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
       || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
+    const isChoiceGroup = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
     const isText = (el instanceof HTMLInputElement
                      && /^(text|email|tel|url|search|number|)$/.test(el.type))
                  || el instanceof HTMLTextAreaElement;
-    if (!isDropdown && !isText) continue;
+    if (!isDropdown && !isText && !isChoiceGroup) continue;
     // Don't clobber a text field the user already typed into.
     if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
 
@@ -849,6 +853,15 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
     if (!remembered) continue;
 
+    // Narrative answers (essays, "why us") must be tailored to THIS company —
+    // don't paste the prior employer's wording verbatim. When a company is
+    // detectable, defer to the LLM tier, which re-synthesizes using this
+    // remembered answer as a seed. Factual answers always replay verbatim.
+    if (classifyAnswerKind(label, el) === 'narrative' && detectCompany().name) {
+      diag('qa-replay deferred to synthesis (narrative)', { label: label.slice(0, 50) });
+      continue;
+    }
+
     diag('qa-replay', { label: label.slice(0, 50), remembered, matchSource, kind: isDropdown ? 'dropdown' : 'text' });
     const ok = await fillElement(el, remembered);
     if (ok) filled++;
@@ -859,6 +872,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   // the user has never answered (no qa-cache hit). Gemini answers from the
   // profile + resume; the answer is cached so the NEXT visit is a free qa hit.
   // Capped per fill to bound cost/latency; failures leave the field blank.
+  const companyName = detectCompany().name;
   let llmCalls = 0;
   const LLM_CALL_CAP = 10;
   for (const [el, state] of matchMap) {
@@ -878,10 +892,16 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
                || state.sig.name  || state.sig.id || '';
     if (!label) continue;
-    // Text fields only go to the LLM if they're actually QUESTIONS; a plain
-    // unmatched attribute text field should stay blank (the user will fill +
-    // we learn it), not get an AI guess.
-    if (isText && !isQuestionLikeLabel(label)) continue;
+
+    // Tiered reuse: narrative fields (essays, "why us") synthesize from a prior
+    // answer (seed) adapted to this company; factual fields answer from profile.
+    const kind = classifyAnswerKind(label, el);
+    const seed = (kind === 'narrative' && companyName) ? await getSeedAnswer(label) : null;
+
+    // Text fields only go to the LLM if they're actually QUESTIONS, OR they're
+    // narrative fields we have a seed to adapt. A plain unmatched attribute text
+    // field stays blank (the user fills it and we learn it), not an AI guess.
+    if (isText && !isQuestionLikeLabel(label) && !(kind === 'narrative' && seed)) continue;
 
     // Options for the LLM (so it returns a valid choice verbatim).
     let options: string[] = [];
@@ -897,7 +917,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     let resp: { answer: string | null; confidence: number } | null = null;
     try {
       resp = await sendToBackground<{ answer: string | null; confidence: number }>(
-        'ANSWER_FIELD', { question: label, options }
+        'ANSWER_FIELD', { question: label, options, company: companyName || undefined, seedAnswer: seed || undefined }
       );
       diag('llm-tier response', { label: label.slice(0, 60), answer: resp?.answer, confidence: resp?.confidence });
     } catch (err) {
@@ -910,9 +930,13 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const ok = await fillElement(el, resp.answer);
     if (ok) {
       filled++;
-      // Cache so the next visit skips the LLM (free qa-cache hit).
-      rememberAnswer(label, resp.answer, 'llm').catch(() => {});
-      sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      // Cache factual answers so the next visit is a free qa-cache hit. Do NOT
+      // cache narrative answers: they're company-specific, and re-synthesizing
+      // from the user's ORIGINAL seed each visit avoids company-to-company drift.
+      if (kind !== 'narrative') {
+        rememberAnswer(label, resp.answer, 'llm').catch(() => {});
+        sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      }
     }
   }
 
@@ -1053,7 +1077,8 @@ function applyHint(
     // what the option text shows ("India +91"), so a ghost preview would be
     // misleading. Native <select> and button-dropdowns aren't input/textarea
     // so they're already excluded; isCombobox() catches role=combobox inputs.
-    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)) {
+    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)
+        && !(el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))) {
       const preview = entry.sensitive ? '•••••' : resolvePhoneValue(entry.value, entry.canonical_key);
       const altCount = (result.alternativeCount ?? 1) - 1;
       const suffix = altCount > 0 ? ` (+${altCount})` : '';
@@ -1146,10 +1171,10 @@ function isQuestionLikeLabel(label: string): boolean {
 function tryLearnField(el: HTMLElement): void {
   if (!el.isConnected) return;
 
-  // Never learn checkbox / radio inputs. Their `.value` is a control ID
-  // (e.g. Greenhouse's "243839894002"), not user-meaningful data — learning
-  // it pollutes the profile with junk under junk canonical keys.
-  if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) return;
+  // Raw .value on a checkbox/radio is a control ID — meaningless. Both kinds
+  // are now intercepted by their group handlers, whose capture() reads the
+  // checked LABEL(s) ("Male"/"Yes"/"Supplychain, Industrial AI") which IS
+  // meaningful. So no skip-guard here; the handler abstraction protects us.
 
   // NOTE: do NOT guard on dittoFilled here. That marker is preserved on comboboxes
   // as long as they show a committed value. Blocking on it would permanently prevent
@@ -1161,7 +1186,11 @@ function tryLearnField(el: HTMLElement): void {
   // don't skip combobox-like elements when focus stays on them after the
   // user picks an option (the most common pattern in react-select / Greenhouse).
   const comboLike = isCombobox(el);
-  if (document.activeElement === el && !comboLike) return;
+  // Radio/checkbox groups have no "mid-typing" state, so learning while one is
+  // focused is safe (bypass the guard, like comboboxes). Plain text fields keep
+  // the guard.
+  const isChoice = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
+  if (document.activeElement === el && !comboLike && !isChoice) return;
 
   const state = matchMap.get(el);
   if (!state) return;
@@ -1171,11 +1200,10 @@ function tryLearnField(el: HTMLElement): void {
   // their selection as textContent (e.g. "+91" or "🇮🇳 India").
   const isButton = el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
     || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT');
-  const rawValue = comboLike
-    ? getComboboxDisplayValue(el)
-    : isButton
-      ? (el.textContent?.trim() ?? '')
-      : ((el as HTMLInputElement).value ?? '');
+  // Capture the user's value via the field-kind handler. The handler's capture()
+  // maps 1:1 to the previous inline ternary (combobox → display value, button →
+  // textContent, select/text → .value), so behavior is unchanged.
+  const rawValue = resolveHandler(el).capture(el) ?? '';
   const value    = rawValue.trim();
 
   // A combobox/button that reads back as just a calling code ("+1", "+246")
@@ -1336,8 +1364,11 @@ function runLearnSweep(): void {
     if (state.result.status === 'UNKNOWN') {
       tryLearnField(el);
     } else if (state.result.status === 'MATCHED') {
-      // Sweep MATCHED comboboxes AND button-triggered pickers (phone country code etc.)
-      if (isCombobox(el) || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button') {
+      // Sweep MATCHED comboboxes, button-triggered pickers (phone country code),
+      // and radio/checkbox groups — none reliably fire blur/change on the
+      // representative element when the user toggles another member.
+      if (isCombobox(el) || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
+          || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))) {
         tryLearnField(el);
       }
     }
@@ -1395,15 +1426,32 @@ function handleListboxOptionMousedown(e: MouseEvent): void {
 
   const listbox = optionEl.closest('[role="listbox"]') as HTMLElement | null;
 
-  // Find the owning field: prefer the focused combobox (react-select keeps the
-  // input focused through the click); otherwise the matchMap combobox whose
-  // listbox contains this option.
+  // Snapshot the active element synchronously at mousedown time, BEFORE the
+  // dropdown closes. Angular Material CDK overlays use RestoreFocus: they
+  // return focus to whatever element was active before the overlay opened.
+  // Reading document.activeElement inside the 60 ms timeout would get that
+  // restored element — potentially the last autofilled combobox, not the
+  // field the user actually clicked — causing wrong label associations like
+  // "Current Location = Yes". Capturing it NOW avoids the mismatch.
+  const activeAtMousedown = document.activeElement as HTMLElement | null;
+
   setTimeout(() => {
     let owner: HTMLElement | null = null;
-    const active = document.activeElement as HTMLElement | null;
-    if (active && matchMap.has(active) && isCombobox(active)) {
-      owner = active;
-    } else if (listbox) {
+
+    // Primary: the element that was active WHEN the user clicked the option.
+    // For React-select the input stays focused throughout; for Angular Material
+    // the trigger element is active while the panel is open. Either way the
+    // synchronous snapshot is the field that owns this dropdown.
+    if (activeAtMousedown && matchMap.has(activeAtMousedown) && isCombobox(activeAtMousedown)) {
+      owner = activeAtMousedown;
+    }
+
+    // Fallback: DOM search for a matchMap combobox whose listbox contains this
+    // option. Works when findListbox() can walk the DOM (react-select siblings,
+    // aria-controls). Angular Material portals appended to <body> won't match
+    // here — in that case we skip rather than risk a wrong label from the
+    // post-close activeElement.
+    if (!owner && listbox) {
       for (const [el] of matchMap) {
         if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
             && isCombobox(el) && findListbox(el) === listbox) {
@@ -1412,6 +1460,7 @@ function handleListboxOptionMousedown(e: MouseEvent): void {
         }
       }
     }
+
     if (owner) learnDropdownSelection(owner, optionText);
   }, 60);
 }
@@ -1530,8 +1579,23 @@ async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string)
       value,
     });
     applyLearnedEntry(el, sig, newEntry);
-  } catch {
-    // Silently ignore — sensitive field or background unavailable
+  } catch (err) {
+    // LEARN_FIELD refused this as a profile attribute — typically because the
+    // canonical_key would be junk (Greenhouse-style synthetic names like
+    // "question_18957398004"). Don't lose the user's input: remember it as a
+    // Q→A asset keyed by the visible label. ANY field becomes a memory asset.
+    const msg = String((err as Error)?.message ?? '');
+    if (/junk canonical|Refusing to learn/i.test(msg)) {
+      const label = sig.label || sig.ariaLabel || sig.placeholder || '';
+      if (label && value) {
+        diag('learn → qa-cache (fallback from LEARN_FIELD)', {
+          label: label.slice(0, 60), value: value.slice(0, 80),
+        });
+        rememberAnswer(label, value).catch(() => {});
+        sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      }
+    }
+    // Other errors (sensitive field, background unavailable) silently ignored.
   }
 }
 
