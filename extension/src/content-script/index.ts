@@ -1426,15 +1426,32 @@ function handleListboxOptionMousedown(e: MouseEvent): void {
 
   const listbox = optionEl.closest('[role="listbox"]') as HTMLElement | null;
 
-  // Find the owning field: prefer the focused combobox (react-select keeps the
-  // input focused through the click); otherwise the matchMap combobox whose
-  // listbox contains this option.
+  // Snapshot the active element synchronously at mousedown time, BEFORE the
+  // dropdown closes. Angular Material CDK overlays use RestoreFocus: they
+  // return focus to whatever element was active before the overlay opened.
+  // Reading document.activeElement inside the 60 ms timeout would get that
+  // restored element — potentially the last autofilled combobox, not the
+  // field the user actually clicked — causing wrong label associations like
+  // "Current Location = Yes". Capturing it NOW avoids the mismatch.
+  const activeAtMousedown = document.activeElement as HTMLElement | null;
+
   setTimeout(() => {
     let owner: HTMLElement | null = null;
-    const active = document.activeElement as HTMLElement | null;
-    if (active && matchMap.has(active) && isCombobox(active)) {
-      owner = active;
-    } else if (listbox) {
+
+    // Primary: the element that was active WHEN the user clicked the option.
+    // For React-select the input stays focused throughout; for Angular Material
+    // the trigger element is active while the panel is open. Either way the
+    // synchronous snapshot is the field that owns this dropdown.
+    if (activeAtMousedown && matchMap.has(activeAtMousedown) && isCombobox(activeAtMousedown)) {
+      owner = activeAtMousedown;
+    }
+
+    // Fallback: DOM search for a matchMap combobox whose listbox contains this
+    // option. Works when findListbox() can walk the DOM (react-select siblings,
+    // aria-controls). Angular Material portals appended to <body> won't match
+    // here — in that case we skip rather than risk a wrong label from the
+    // post-close activeElement.
+    if (!owner && listbox) {
       for (const [el] of matchMap) {
         if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
             && isCombobox(el) && findListbox(el) === listbox) {
@@ -1443,6 +1460,7 @@ function handleListboxOptionMousedown(e: MouseEvent): void {
         }
       }
     }
+
     if (owner) learnDropdownSelection(owner, optionText);
   }, 60);
 }

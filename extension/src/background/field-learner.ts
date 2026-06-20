@@ -57,7 +57,7 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
   [/\bzip\b|\bpostal\b/i,                                   'zip_code'],
   [/\bcity\b|\blocality\b/i,                                'city'],
   [/\bstate\b|\bprovince\b|\bregion\b/i,                   'state'],
-  [/dial.?code|calling.?code|phone.?country/i,              'phone_country_code'],
+  [/dial.?code|calling.?code|phone.?country|country.?code\b/i, 'phone_country_code'],
   [/\bcountry\b/i,                                          'country'],
   [/\blinkedin\b/i,                                         'linkedin_url'],
   [/\bgithub\b/i,                                           'github_url'],
