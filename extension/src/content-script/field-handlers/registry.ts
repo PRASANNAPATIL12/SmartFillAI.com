@@ -13,12 +13,14 @@ import type { FieldHandler } from './types';
 import { buttonDropdownHandler } from './button-dropdown-handler';
 import { selectHandler } from './select-handler';
 import { comboboxHandler } from './combobox-handler';
+import { radioGroupHandler } from './radio-group-handler';
 import { textHandler } from './text-handler';
 
 const HANDLERS: FieldHandler[] = [
   buttonDropdownHandler,
   selectHandler,
   comboboxHandler,
+  radioGroupHandler,
   // ← new field-kind handlers go here, before the text fallback
   textHandler,
 ];

@@ -108,9 +108,11 @@ function readListboxOptions(lb: Element): string[] {
  */
 export function extractAllFields(root: Document | Element = document): FieldSignature[] {
   const selector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"])'
-    + ':not([type="reset"]):not([type="image"]),'
+    + ':not([type="reset"]):not([type="image"]):not([type="radio"]),'
     + 'textarea,'
     + 'select';
+  // Radios are excluded above and re-added as grouped fields by
+  // extractRadioGroups() — one logical field per (form, name) instead of N.
 
   const elements = Array.from(root.querySelectorAll<
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
@@ -135,7 +137,85 @@ export function extractAllFields(root: Document | Element = document): FieldSign
     ...extractButtonDropdowns(root),
     ...extractFileInputs(root, seen),
     ...extractDropzones(root, seen),
+    ...extractRadioGroups(root, seen),
   ];
+}
+
+/**
+ * Group <input type="radio"> elements into ONE logical field per (form, name).
+ * Individual radios are excluded from the primary scan; here we emit a single
+ * FieldSignature with inputType:'radio-group' and options = the radio labels, so
+ * the matcher classifies the group (yes/no, gender, …) via classifyByOptionSet
+ * and the radio-group handler fills it by clicking the matching option.
+ *
+ * `element` is the FIRST radio (the representative); the handler re-derives the
+ * full group from it via the shared `name`, so fill/capture see the whole set.
+ */
+function extractRadioGroups(root: Document | Element, seen: Set<HTMLElement>): FieldSignature[] {
+  const radios = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]'))
+    .filter(r => isVisible(r) && !seen.has(r));
+
+  const groups = new Map<string, HTMLInputElement[]>();
+  for (const r of radios) {
+    const scopeId = r.form ? (r.form.getAttribute('id') || r.form.getAttribute('name') || 'form') : 'noform';
+    const key = `${scopeId}::${r.name || r.id || 'unnamed'}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+
+  const sigs: FieldSignature[] = [];
+  for (const members of groups.values()) {
+    if (members.length === 0) continue;
+    members.forEach(m => seen.add(m));
+    const rep = members[0];
+    const options = members.map(radioOptionLabel).filter(t => t.length > 0);
+    const base = extractSignature(rep);
+    sigs.push({
+      ...base,
+      label: radioGroupQuestion(members) || base.label || rep.name || 'Choice',
+      inputType: 'radio-group',
+      options,
+      element: rep,
+    });
+  }
+  return sigs;
+}
+
+/** Visible label for a single radio OPTION (e.g. "Male", "Yes"). */
+function radioOptionLabel(r: HTMLInputElement): string {
+  if (r.id) {
+    const lbl = document.querySelector(`label[for="${CSS.escape(r.id)}"]`);
+    const t = lbl?.textContent?.replace(/\s+/g, ' ').trim();
+    if (t) return t;
+  }
+  const wrap = r.closest('label');
+  const wt = wrap?.textContent?.replace(/\s+/g, ' ').trim();
+  if (wt) return wt;
+  const aria = r.getAttribute('aria-label')?.trim();
+  if (aria) return aria;
+  const sib = r.nextElementSibling as HTMLElement | null;
+  const st = sib?.textContent?.replace(/\s+/g, ' ').trim();
+  if (st) return st;
+  return (r.value || '').trim();
+}
+
+/** The group's QUESTION label (fieldset legend or radiogroup container label). */
+function radioGroupQuestion(members: HTMLInputElement[]): string {
+  const rep = members[0];
+  const legend = rep.closest('fieldset')?.querySelector('legend')?.textContent?.replace(/\s+/g, ' ').trim();
+  if (legend) return legend;
+  const groupEl = rep.closest('[role="radiogroup"]');
+  const labelledby = groupEl?.getAttribute('aria-labelledby');
+  if (labelledby) {
+    const txt = labelledby.split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      .join(' ').trim();
+    if (txt) return txt;
+  }
+  const ariaLabel = groupEl?.getAttribute('aria-label')?.trim();
+  if (ariaLabel) return ariaLabel;
+  return '';
 }
 
 /**
