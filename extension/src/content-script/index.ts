@@ -826,11 +826,11 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 
     const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
       || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
-    const isRadioGroup = el instanceof HTMLInputElement && el.type === 'radio';
+    const isChoiceGroup = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
     const isText = (el instanceof HTMLInputElement
                      && /^(text|email|tel|url|search|number|)$/.test(el.type))
                  || el instanceof HTMLTextAreaElement;
-    if (!isDropdown && !isText && !isRadioGroup) continue;
+    if (!isDropdown && !isText && !isChoiceGroup) continue;
     // Don't clobber a text field the user already typed into.
     if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
 
@@ -1078,7 +1078,7 @@ function applyHint(
     // misleading. Native <select> and button-dropdowns aren't input/textarea
     // so they're already excluded; isCombobox() catches role=combobox inputs.
     if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && !isCombobox(el)
-        && !(el instanceof HTMLInputElement && el.type === 'radio')) {
+        && !(el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))) {
       const preview = entry.sensitive ? '•••••' : resolvePhoneValue(entry.value, entry.canonical_key);
       const altCount = (result.alternativeCount ?? 1) - 1;
       const suffix = altCount > 0 ? ` (+${altCount})` : '';
@@ -1171,12 +1171,10 @@ function isQuestionLikeLabel(label: string): boolean {
 function tryLearnField(el: HTMLElement): void {
   if (!el.isConnected) return;
 
-  // Never learn raw checkbox inputs. Their `.value` is a control ID
-  // (e.g. Greenhouse's "243839894002"), not user-meaningful data — learning
-  // it pollutes the profile with junk under junk canonical keys.
-  // Radios ARE learned now: the radio-group handler's capture() reads the
-  // checked option's LABEL (e.g. "Male"/"Yes"), which is meaningful.
-  if (el instanceof HTMLInputElement && el.type === 'checkbox') return;
+  // Raw .value on a checkbox/radio is a control ID — meaningless. Both kinds
+  // are now intercepted by their group handlers, whose capture() reads the
+  // checked LABEL(s) ("Male"/"Yes"/"Supplychain, Industrial AI") which IS
+  // meaningful. So no skip-guard here; the handler abstraction protects us.
 
   // NOTE: do NOT guard on dittoFilled here. That marker is preserved on comboboxes
   // as long as they show a committed value. Blocking on it would permanently prevent
@@ -1188,10 +1186,11 @@ function tryLearnField(el: HTMLElement): void {
   // don't skip combobox-like elements when focus stays on them after the
   // user picks an option (the most common pattern in react-select / Greenhouse).
   const comboLike = isCombobox(el);
-  // A radio group has no "mid-typing" state, so learning while it's focused is
-  // safe (bypass the guard, like comboboxes). Plain text fields keep the guard.
-  const isRadio = el instanceof HTMLInputElement && el.type === 'radio';
-  if (document.activeElement === el && !comboLike && !isRadio) return;
+  // Radio/checkbox groups have no "mid-typing" state, so learning while one is
+  // focused is safe (bypass the guard, like comboboxes). Plain text fields keep
+  // the guard.
+  const isChoice = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
+  if (document.activeElement === el && !comboLike && !isChoice) return;
 
   const state = matchMap.get(el);
   if (!state) return;
@@ -1366,9 +1365,10 @@ function runLearnSweep(): void {
       tryLearnField(el);
     } else if (state.result.status === 'MATCHED') {
       // Sweep MATCHED comboboxes, button-triggered pickers (phone country code),
-      // and radio groups — none reliably fire blur/change for our learn path.
+      // and radio/checkbox groups — none reliably fire blur/change on the
+      // representative element when the user toggles another member.
       if (isCombobox(el) || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
-          || (el instanceof HTMLInputElement && el.type === 'radio')) {
+          || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))) {
         tryLearnField(el);
       }
     }
@@ -1561,8 +1561,23 @@ async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string)
       value,
     });
     applyLearnedEntry(el, sig, newEntry);
-  } catch {
-    // Silently ignore — sensitive field or background unavailable
+  } catch (err) {
+    // LEARN_FIELD refused this as a profile attribute — typically because the
+    // canonical_key would be junk (Greenhouse-style synthetic names like
+    // "question_18957398004"). Don't lose the user's input: remember it as a
+    // Q→A asset keyed by the visible label. ANY field becomes a memory asset.
+    const msg = String((err as Error)?.message ?? '');
+    if (/junk canonical|Refusing to learn/i.test(msg)) {
+      const label = sig.label || sig.ariaLabel || sig.placeholder || '';
+      if (label && value) {
+        diag('learn → qa-cache (fallback from LEARN_FIELD)', {
+          label: label.slice(0, 60), value: value.slice(0, 80),
+        });
+        rememberAnswer(label, value).catch(() => {});
+        sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
+      }
+    }
+    // Other errors (sensitive field, background unavailable) silently ignored.
   }
 }
 

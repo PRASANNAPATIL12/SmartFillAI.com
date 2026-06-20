@@ -108,11 +108,12 @@ function readListboxOptions(lb: Element): string[] {
  */
 export function extractAllFields(root: Document | Element = document): FieldSignature[] {
   const selector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"])'
-    + ':not([type="reset"]):not([type="image"]):not([type="radio"]),'
+    + ':not([type="reset"]):not([type="image"]):not([type="radio"]):not([type="checkbox"]),'
     + 'textarea,'
     + 'select';
-  // Radios are excluded above and re-added as grouped fields by
-  // extractRadioGroups() — one logical field per (form, name) instead of N.
+  // Radios and checkboxes are excluded above; both are re-added as grouped
+  // fields by extractRadioGroups() / extractCheckboxGroups() — ONE logical
+  // field per group (by form+name OR shared container) instead of N.
 
   const elements = Array.from(root.querySelectorAll<
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
@@ -138,6 +139,7 @@ export function extractAllFields(root: Document | Element = document): FieldSign
     ...extractFileInputs(root, seen),
     ...extractDropzones(root, seen),
     ...extractRadioGroups(root, seen),
+    ...extractCheckboxGroups(root, seen),
   ];
 }
 
@@ -180,6 +182,130 @@ function extractRadioGroups(root: Document | Element, seen: Set<HTMLElement>): F
     });
   }
   return sigs;
+}
+
+/**
+ * Group <input type="checkbox"> into ONE logical field per group, mirroring
+ * extractRadioGroups. Two grouping strategies (in order):
+ *
+ *   1. Shared `name` (Greenhouse multi-select: `question_<id>[]` on every box)
+ *      — strongest signal, used first.
+ *   2. Nearest common ancestor (<fieldset>, [role="group"], or container with
+ *      ≥2 sibling checkboxes) — catches sets where each box has a unique name.
+ *
+ * Single ungrouped checkboxes (consent boxes — "I agree to terms") still emit
+ * with their own label as the question, so they can be remembered and refilled
+ * like any other Q→A asset.
+ */
+function extractCheckboxGroups(root: Document | Element, seen: Set<HTMLElement>): FieldSignature[] {
+  const boxes = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+    .filter(b => isVisible(b) && !seen.has(b));
+
+  const groups = new Map<string, HTMLInputElement[]>();
+
+  // Strategy 1: group by (form, name) when name is shared.
+  for (const b of boxes) {
+    if (!b.name) continue;
+    const scopeId = b.form ? (b.form.getAttribute('id') || b.form.getAttribute('name') || 'form') : 'noform';
+    const key = `name::${scopeId}::${b.name}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(b);
+    groups.set(key, arr);
+  }
+
+  // Strategy 2: any box not yet grouped — group by nearest fieldset / role=group container.
+  const namedSet = new Set<HTMLInputElement>();
+  for (const arr of groups.values()) for (const b of arr) namedSet.add(b);
+
+  for (const b of boxes) {
+    if (namedSet.has(b)) continue;
+    const container = b.closest('fieldset, [role="group"]') as HTMLElement | null;
+    const key = container ? `container::${container.outerHTML.length}::${(container.getAttribute('id') ?? container.className).slice(0, 40)}::${container.tagName}` : `solo::${b.id || (b.outerHTML?.length ?? 0)}`;
+    const arr = groups.get(key) ?? [];
+    arr.push(b);
+    groups.set(key, arr);
+  }
+
+  const sigs: FieldSignature[] = [];
+  for (const members of groups.values()) {
+    if (members.length === 0) continue;
+    members.forEach(m => seen.add(m));
+    const rep = members[0];
+    const options = members.map(checkboxOptionLabel).filter(t => t.length > 0);
+    const base = extractSignature(rep);
+
+    // Label resolution: group question > rep's own label > name fallback.
+    // A single checkbox is treated as a consent-style yes/no — keep its own label.
+    const groupQ = members.length > 1 ? checkboxGroupQuestion(members) : '';
+    const label = groupQ || base.label || checkboxOptionLabel(rep) || rep.name || 'Choice';
+
+    sigs.push({
+      ...base,
+      label,
+      inputType: 'checkbox-group',
+      options,
+      element: rep,
+    });
+  }
+  return sigs;
+}
+
+/** Visible label for one checkbox option (mirrors radioOptionLabel). */
+function checkboxOptionLabel(c: HTMLInputElement): string {
+  if (c.id) {
+    const lbl = document.querySelector(`label[for="${CSS.escape(c.id)}"]`);
+    const t = lbl?.textContent?.replace(/\s+/g, ' ').trim();
+    if (t) return t;
+  }
+  const wrap = c.closest('label');
+  const wt = wrap?.textContent?.replace(/\s+/g, ' ').trim();
+  if (wt) return wt;
+  const aria = c.getAttribute('aria-label')?.trim();
+  if (aria) return aria;
+  const sib = c.nextElementSibling as HTMLElement | null;
+  const st = sib?.textContent?.replace(/\s+/g, ' ').trim();
+  if (st) return st;
+  return (c.value || '').trim();
+}
+
+/**
+ * The group's QUESTION — usually NOT a fieldset/legend (most ATSes don't use
+ * those). Walk up looking for: legend, [role="group"][aria-labelledby],
+ * aria-label on a group container, or a preceding heading/label sibling text
+ * that looks like a question (≥10 chars, not itself an option label).
+ */
+function checkboxGroupQuestion(members: HTMLInputElement[]): string {
+  const rep = members[0];
+
+  const legend = rep.closest('fieldset')?.querySelector('legend')?.textContent?.replace(/\s+/g, ' ').trim();
+  if (legend) return legend;
+
+  const groupEl = rep.closest('[role="group"]');
+  const labelledby = groupEl?.getAttribute('aria-labelledby');
+  if (labelledby) {
+    const txt = labelledby.split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      .join(' ').trim();
+    if (txt) return txt;
+  }
+  const ariaLabel = groupEl?.getAttribute('aria-label')?.trim();
+  if (ariaLabel) return ariaLabel;
+
+  // Walk up the DOM looking for the nearest preceding heading/label-like text
+  // that introduces this group. Bounded depth to avoid grabbing page-level text.
+  const optionLabels = new Set(members.map(m => checkboxOptionLabel(m).toLowerCase()));
+  let cur: HTMLElement | null = rep.parentElement;
+  for (let depth = 0; depth < 6 && cur; depth++, cur = cur.parentElement) {
+    for (let sib = cur.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      const text = (sib.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (text.length < 10 || text.length > 240) continue;
+      if (optionLabels.has(text.toLowerCase())) continue;
+      // Prefer label/heading-ish elements but accept any element with a
+      // plausible question — Greenhouse uses <label> as the question heading.
+      return text;
+    }
+  }
+  return '';
 }
 
 /** Visible label for a single radio OPTION (e.g. "Male", "Yes"). */

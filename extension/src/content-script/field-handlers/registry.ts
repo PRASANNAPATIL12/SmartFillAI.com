@@ -14,6 +14,7 @@ import { buttonDropdownHandler } from './button-dropdown-handler';
 import { selectHandler } from './select-handler';
 import { comboboxHandler } from './combobox-handler';
 import { radioGroupHandler } from './radio-group-handler';
+import { checkboxGroupHandler } from './checkbox-group-handler';
 import { textHandler } from './text-handler';
 
 const HANDLERS: FieldHandler[] = [
@@ -21,6 +22,7 @@ const HANDLERS: FieldHandler[] = [
   selectHandler,
   comboboxHandler,
   radioGroupHandler,
+  checkboxGroupHandler,
   // ← new field-kind handlers go here, before the text fallback
   textHandler,
 ];
