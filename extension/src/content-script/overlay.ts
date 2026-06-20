@@ -702,16 +702,21 @@ export function showAlternativesPanel(
   sh.appendChild(panel);
   _altsPanelEl = panel;
 
-  // Dismiss on outside click. composedPath() is required here because the panel
-  // lives inside Shadow DOM — e.target is retargeted to the shadow host, so
-  // contains() always returns false for clicks inside the panel. composedPath()
-  // returns the real propagation path including elements inside shadow roots.
-  _altsOutsideHandler = (e: MouseEvent) => {
-    const path: EventTarget[] = e.composedPath ? e.composedPath() : [];
-    if (path.some(node => node === _altsPanelEl)) return;
-    hideAlternativesPanel();
-  };
-  document.addEventListener('click', _altsOutsideHandler, true);
+  // Dismiss on outside click.
+  // Delay registration so the click that opened the panel (mousedown→focus→
+  // background call → panel created, all before mouseup/click fires) does not
+  // immediately dismiss it. 200ms is safely past any realistic opening-click
+  // propagation (mousedown→mouseup typically 50-150ms).
+  // composedPath() is required because the panel lives inside Shadow DOM —
+  // e.target is retargeted to the shadow host, so contains() is always false.
+  setTimeout(() => {
+    _altsOutsideHandler = (e: MouseEvent) => {
+      const path: EventTarget[] = e.composedPath ? e.composedPath() : [];
+      if (path.some(node => node === _altsPanelEl)) return;
+      hideAlternativesPanel();
+    };
+    document.addEventListener('click', _altsOutsideHandler, true);
+  }, 200);
 
   _altsEscHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') hideAlternativesPanel();
