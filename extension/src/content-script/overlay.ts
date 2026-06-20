@@ -678,6 +678,10 @@ export function showAlternativesPanel(
       ${entry.isDefault ? '<span class="alts-default">default</span>' : ''}
     `;
     if (!entry.isDefault) {
+      // Prevent the input from blurring when the user presses the mouse button
+      // on a row — blur fires on mousedown, click fires on mouseup. Without this,
+      // the blur-triggered hideAlternativesPanel(150ms) races against the click.
+      row.addEventListener('mousedown', (e) => e.preventDefault());
       row.addEventListener('click', () => {
         onSelect(entry.id, entry.value);
         hideAlternativesPanel();
@@ -698,13 +702,16 @@ export function showAlternativesPanel(
   sh.appendChild(panel);
   _altsPanelEl = panel;
 
-  // Dismiss on outside click (setTimeout so the opening click doesn't dismiss)
-  setTimeout(() => {
-    _altsOutsideHandler = (e: MouseEvent) => {
-      if (!_altsPanelEl?.contains(e.target as Node)) hideAlternativesPanel();
-    };
-    document.addEventListener('click', _altsOutsideHandler, true);
-  }, 50);
+  // Dismiss on outside click. composedPath() is required here because the panel
+  // lives inside Shadow DOM — e.target is retargeted to the shadow host, so
+  // contains() always returns false for clicks inside the panel. composedPath()
+  // returns the real propagation path including elements inside shadow roots.
+  _altsOutsideHandler = (e: MouseEvent) => {
+    const path: EventTarget[] = e.composedPath ? e.composedPath() : [];
+    if (path.some(node => node === _altsPanelEl)) return;
+    hideAlternativesPanel();
+  };
+  document.addEventListener('click', _altsOutsideHandler, true);
 
   _altsEscHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') hideAlternativesPanel();
