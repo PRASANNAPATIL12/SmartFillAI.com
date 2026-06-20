@@ -1018,6 +1018,14 @@ function applyHint(
     el.dataset.dittoMatch = 'true';
     el.dataset.dittoKey = entry.canonical_key;
     attachPillListeners(el, entry, result);
+    // Alternatives panel listener — wired independently of dittoListeners so it
+    // gets attached on every applyHint call (including after ADD_ALTERNATIVE).
+    // openAlternativesPanel is a no-op when count < 2, so safe to wire always.
+    if (!el.dataset.dittoAltsWired) {
+      el.dataset.dittoAltsWired = 'true';
+      el.addEventListener('focus', () => openAlternativesPanel(el, entry));
+      el.addEventListener('blur',  () => setTimeout(hideAlternativesPanel, 150));
+    }
     // Ghost text preview — show value (masked for sensitive entries).
     // Skip dropdowns entirely: the profile value ("India") rarely matches
     // what the option text shows ("India +91"), so a ghost preview would be
@@ -1066,12 +1074,6 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   el.addEventListener('focus', () => {
     el.dataset.dittoPreFocusValue = capturePreFocus();
   });
-
-  // Alternatives panel — show on focus if multiple values exist
-  if ((result.alternativeCount ?? 0) > 1) {
-    el.addEventListener('focus', () => openAlternativesPanel(el, entry));
-    el.addEventListener('blur', () => setTimeout(hideAlternativesPanel, 150));
-  }
 
   let updateTimer: ReturnType<typeof setTimeout> | undefined;
   const trigger = (): void => {
@@ -1251,11 +1253,15 @@ function tryLearnField(el: HTMLElement): void {
           },
           onAdd: () => {
             sfaLog('add alternative:', displayLabel, '→', normalizedValue);
-            sendToBackground('ADD_ALTERNATIVE', {
+            sendToBackground<ProfileEntry>('ADD_ALTERNATIVE', {
               canonicalKey,
               value: normalizedValue,
               displayLabel,
               category: state.entry!.category,
+            }).then(newEntry => {
+              // Update local profile so openAlternativesPanel sees it immediately
+              profile.push(newEntry);
+              chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
             }).catch(() => {});
           },
         });
