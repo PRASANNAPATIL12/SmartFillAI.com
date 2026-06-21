@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { AIProviderFactory, getProviderConfig } from '@/ai-providers';
+import { AIProviderFactory } from '@/ai-providers';
 import { ENV_GEMINI_API_KEY } from '@/ai-providers/env';
 import type { ResumeParseResult, ProfileEntry } from '@shared/types';
 import { addEntry, getEntriesByKey, updateEntry, type NewEntryData } from './profile-store';
@@ -81,13 +81,8 @@ export async function parseResumeText(text: string): Promise<ResumeParseResult> 
 // ── PDF-based parsing (Gemini only — supports inline document data) ───────────
 
 export async function parseResumePdf(pdfBase64: string): Promise<ResumeParseResult> {
-  const cfg = await getProviderConfig();
-  if (cfg.provider !== 'gemini') {
-    throw new Error(
-      'PDF upload requires the Gemini AI provider. Switch to Gemini in Settings → AI Provider.'
-    );
-  }
-
+  // PDF parsing always uses Gemini directly (inline document data is Gemini-only).
+  // The provider config controls the general AI provider but does not gate PDF parsing.
   if (!ENV_GEMINI_API_KEY) throw new Error('Gemini API key not configured.');
 
   const genAI = new GoogleGenerativeAI(ENV_GEMINI_API_KEY);
