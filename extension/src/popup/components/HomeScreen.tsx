@@ -24,15 +24,18 @@ type FillState = 'idle' | 'filling' | 'done' | 'error';
 export default function HomeScreen({
   session, onGoProfile, onGoSettings, onGoDocuments, onGoAnswers, onGoLogin, onSignOut,
 }: Props): React.ReactElement {
-  const [entries,      setEntries]      = useState<ProfileEntry[]>([]);
-  const [docCount,     setDocCount]     = useState(0);
-  const [answerCount,  setAnswerCount]  = useState(0);
-  const [fillState,    setFillState]    = useState<FillState>('idle');
-  const [fillResult,   setFillResult]   = useState<{ filled: number; skipped: number } | null>(null);
-  const [fillError,    setFillError]    = useState('');
-  const [syncing,      setSyncing]      = useState(false);
-  const [fieldStats,   setFieldStats]   = useState<{ total: number; matched: number } | null>(null);
-  const [isOnline,     setIsOnline]     = useState(navigator.onLine);
+  const [entries,        setEntries]        = useState<ProfileEntry[]>([]);
+  const [docCount,       setDocCount]       = useState(0);
+  const [answerCount,    setAnswerCount]    = useState(0);
+  const [profileLoaded,  setProfileLoaded]  = useState(false);
+  const [docsLoaded,     setDocsLoaded]     = useState(false);
+  const [answersLoaded,  setAnswersLoaded]  = useState(false);
+  const [fillState,      setFillState]      = useState<FillState>('idle');
+  const [fillResult,     setFillResult]     = useState<{ filled: number; skipped: number } | null>(null);
+  const [fillError,      setFillError]      = useState('');
+  const [syncing,        setSyncing]        = useState(false);
+  const [fieldStats,     setFieldStats]     = useState<{ total: number; matched: number } | null>(null);
+  const [isOnline,       setIsOnline]       = useState(navigator.onLine);
 
   useEffect(() => {
     const onOnline  = () => setIsOnline(true);
@@ -47,11 +50,14 @@ export default function HomeScreen({
 
   useEffect(() => {
     sendToBackground<ProfileEntry[]>('GET_PROFILE')
-      .then(setEntries).catch(() => setEntries([]));
+      .then(e  => { setEntries(e);             setProfileLoaded(true); })
+      .catch(() => {                            setProfileLoaded(true); });
     sendToBackground<DocumentMeta[]>('GET_DOCUMENTS')
-      .then(docs => setDocCount(docs.length)).catch(() => setDocCount(0));
+      .then(d  => { setDocCount(d.length);     setDocsLoaded(true); })
+      .catch(() => {                            setDocsLoaded(true); });
     getAllQAEntries()
-      .then(entries => setAnswerCount(entries.length)).catch(() => setAnswerCount(0));
+      .then(qa => { setAnswerCount(qa.length); setAnswersLoaded(true); })
+      .catch(() => {                            setAnswersLoaded(true); });
     sendToActiveTab<{ total: number; matched: number }>('GET_FIELD_STATS')
       .then(stats => setFieldStats(stats)).catch(() => setFieldStats(null));
   }, []);
@@ -189,7 +195,9 @@ export default function HomeScreen({
         >
           <div>
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-0.5">Profile</p>
-            {entries.length === 0 ? (
+            {!profileLoaded ? (
+              <div className="w-36 h-3.5 bg-slate-200/80 rounded animate-pulse mt-0.5" />
+            ) : entries.length === 0 ? (
               <p className="text-sm text-slate-400">No entries yet — tap to add</p>
             ) : (
               <p className="text-sm text-slate-700 font-medium">
@@ -214,11 +222,15 @@ export default function HomeScreen({
         >
           <div>
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-0.5">Documents</p>
-            <p className="text-sm text-slate-700 font-medium">
-              {docCount === 0
-                ? <span className="text-slate-400 font-normal">No files yet — tap to upload</span>
-                : `${docCount} file${docCount !== 1 ? 's' : ''} ready`}
-            </p>
+            {!docsLoaded ? (
+              <div className="w-28 h-3.5 bg-slate-200/80 rounded animate-pulse mt-0.5" />
+            ) : (
+              <p className="text-sm text-slate-700 font-medium">
+                {docCount === 0
+                  ? <span className="text-slate-400 font-normal">No files yet — tap to upload</span>
+                  : `${docCount} file${docCount !== 1 ? 's' : ''} ready`}
+              </p>
+            )}
           </div>
           <svg className="w-4 h-4 text-slate-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -232,19 +244,23 @@ export default function HomeScreen({
         >
           <div>
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-0.5">Answers</p>
-            <p className="text-sm text-slate-700 font-medium">
-              {answerCount === 0
-                ? <span className="text-slate-400 font-normal">Remembered answers appear here</span>
-                : `${answerCount} remembered answer${answerCount !== 1 ? 's' : ''}`}
-            </p>
+            {!answersLoaded ? (
+              <div className="w-32 h-3.5 bg-slate-200/80 rounded animate-pulse mt-0.5" />
+            ) : (
+              <p className="text-sm text-slate-700 font-medium">
+                {answerCount === 0
+                  ? <span className="text-slate-400 font-normal">Remembered answers appear here</span>
+                  : `${answerCount} remembered answer${answerCount !== 1 ? 's' : ''}`}
+              </p>
+            )}
           </div>
           <svg className="w-4 h-4 text-slate-400 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
           </svg>
         </button>
 
-        {/* How it works — shown only when profile is empty */}
-        {entries.length === 0 && (
+        {/* How it works — shown only when profile is empty and loaded */}
+        {profileLoaded && entries.length === 0 && (
           <div className="glass-card px-4 py-3 space-y-1.5">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">How it works</p>
             <ol className="space-y-1 list-decimal list-inside text-xs text-slate-500">
