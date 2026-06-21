@@ -24,6 +24,29 @@ interface Props {
 
 type FillState = 'idle' | 'filling' | 'done' | 'error';
 
+const COMMON_FIELDS: Array<{ key: string; label: string }> = [
+  { key: 'first_name',          label: 'First Name' },
+  { key: 'last_name',           label: 'Last Name' },
+  { key: 'email',               label: 'Email' },
+  { key: 'phone_number',        label: 'Phone' },
+  { key: 'city',                label: 'City' },
+  { key: 'state',               label: 'State' },
+  { key: 'country',             label: 'Country' },
+  { key: 'linkedin_url',        label: 'LinkedIn' },
+  { key: 'university',          label: 'University' },
+  { key: 'degree',              label: 'Degree' },
+  { key: 'graduation_year',     label: 'Graduation Year' },
+  { key: 'current_company',     label: 'Current Company' },
+  { key: 'job_title',           label: 'Job Title' },
+  { key: 'years_of_experience', label: 'Years of Experience' },
+  { key: 'skills',              label: 'Skills' },
+  { key: 'visa_status',         label: 'Visa Status' },
+  { key: 'notice_period',       label: 'Notice Period' },
+  { key: 'gender',              label: 'Gender' },
+  { key: 'date_of_birth',       label: 'Date of Birth' },
+  { key: 'gpa',                 label: 'GPA' },
+];
+
 export default function HomeScreen({
   provider, session, onGoProfile, onGoSettings, onGoDocuments, onGoAnswers, onGoLogin, onSignOut,
 }: Props): React.ReactElement {
@@ -192,6 +215,47 @@ export default function HomeScreen({
             </div>
           )}
         </div>
+
+        {/* Profile completeness */}
+        {entries.length > 0 && (() => {
+          const filledKeys = new Set(entries.map(e => e.canonical_key));
+          const missing = COMMON_FIELDS.filter(f => !filledKeys.has(f.key));
+          const filled = COMMON_FIELDS.length - missing.length;
+          const pct = Math.round((filled / COMMON_FIELDS.length) * 100);
+          return (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                  Completeness
+                </span>
+                <span className="text-xs text-slate-400">{filled}/{COMMON_FIELDS.length}</span>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden mb-2">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      pct >= 80 ? 'bg-emerald-500' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400'
+                    }`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                {missing.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {missing.slice(0, 6).map(f => (
+                      <span key={f.key}
+                        className="text-xs bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded">
+                        {f.label}
+                      </span>
+                    ))}
+                    {missing.length > 6 && (
+                      <span className="text-xs text-slate-400">+{missing.length - 6} more</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Documents */}
         <div>
