@@ -57,6 +57,7 @@ export default function HomeScreen({
   const [fillResult, setFillResult] = useState<{ filled: number; skipped: number } | null>(null);
   const [fillError,  setFillError]  = useState('');
   const [syncing,    setSyncing]    = useState(false);
+  const [fieldStats, setFieldStats] = useState<{ total: number; matched: number } | null>(null);
 
   useEffect(() => {
     sendToBackground<ProfileEntry[]>('GET_PROFILE')
@@ -68,6 +69,9 @@ export default function HomeScreen({
     getAllQAEntries()
       .then(entries => setAnswerCount(entries.length))
       .catch(() => setAnswerCount(0));
+    sendToActiveTab<{ total: number; matched: number }>('GET_FIELD_STATS')
+      .then(stats => setFieldStats(stats))
+      .catch(() => setFieldStats(null));
   }, []);
 
   const handleFill = useCallback(async () => {
@@ -77,6 +81,9 @@ export default function HomeScreen({
       const result = await sendToActiveTab<{ filled: number; skipped: number }>('FILL_ALL');
       setFillResult(result);
       setFillState(result.filled === 0 ? 'error' : 'done');
+      sendToActiveTab<{ total: number; matched: number }>('GET_FIELD_STATS')
+        .then(stats => setFieldStats(stats))
+        .catch(() => {});
       if (result.filled === 0) {
         setFillError(
           entries.length === 0
@@ -174,12 +181,23 @@ export default function HomeScreen({
               Filling…
             </span>
           )}
-          {fillState === 'done' && fillResult && (
-            `Filled ${fillResult.filled} field${fillResult.filled !== 1 ? 's' : ''}`
-          )}
+          {fillState === 'done' && fillResult && (() => {
+            const total = fieldStats?.total ?? (fillResult.filled + fillResult.skipped);
+            return total > fillResult.filled
+              ? `Filled ${fillResult.filled} / ${total} fields`
+              : `Filled ${fillResult.filled} field${fillResult.filled !== 1 ? 's' : ''}`;
+          })()}
           {fillState === 'error' && fillError}
           {fillState === 'idle' && 'Fill This Page'}
         </button>
+
+        {/* Field count for current page */}
+        {fieldStats && fieldStats.total > 0 && fillState === 'idle' && (
+          <p className="text-center text-xs text-slate-400 -mt-2">
+            {fieldStats.total} field{fieldStats.total !== 1 ? 's' : ''} detected
+            {fieldStats.matched > 0 && ` · ${fieldStats.matched} from profile`}
+          </p>
+        )}
 
         {/* Profile summary */}
         <div>

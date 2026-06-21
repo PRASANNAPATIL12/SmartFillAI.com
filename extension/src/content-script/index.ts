@@ -1768,6 +1768,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true; // keep channel open for async response
   }
 
+  if (message.type === 'GET_FIELD_STATS') {
+    let total = 0;
+    let matched = 0;
+    for (const [, state] of matchMap) {
+      if (state.result.status === 'SKIP') continue;
+      total++;
+      if (state.result.status === 'MATCHED') matched++;
+    }
+    sendResponse({ success: true, data: { total, matched } });
+    return false;
+  }
+
   if (message.type === 'FILL_FIELD') {
     const { entryId } = message.payload as { entryId: string };
     const target = [...matchMap.entries()].find(
