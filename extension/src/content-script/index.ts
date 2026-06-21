@@ -886,7 +886,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const isText = (el instanceof HTMLInputElement
                      && /^(text|email|tel|url|search|number|)$/.test(el.type))
                  || el instanceof HTMLTextAreaElement;
-    if (!isDropdown && !isText) continue;
+    const isChoiceGroup = el instanceof HTMLInputElement
+      && (el.type === 'radio' || el.type === 'checkbox');
+    if (!isDropdown && !isText && !isChoiceGroup) continue;
     if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
 
     const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
@@ -905,9 +907,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
 
     // Options for the LLM (so it returns a valid choice verbatim).
     let options: string[] = [];
-    if (isDropdown) {
+    if (isDropdown || isChoiceGroup) {
       options = (state.sig.options && state.sig.options.length) ? state.sig.options : [];
-      if (options.length === 0) {
+      if (options.length === 0 && isDropdown) {
         try { options = await peekOptions(el); } catch { options = []; }
       }
     }

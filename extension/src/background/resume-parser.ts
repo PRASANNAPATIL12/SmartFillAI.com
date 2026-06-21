@@ -126,7 +126,7 @@ export async function createEntriesFromResume(
   // Most recent job
   if (parsed.work_experience.length > 0) {
     const job = parsed.work_experience[0];
-    if (job.company) specs.push({ key: 'company',   label: 'Current Company', value: job.company, category: 'work' });
+    if (job.company) specs.push({ key: 'current_company', label: 'Current Company', value: job.company, category: 'work' });
     if (job.role)    specs.push({ key: 'job_title', label: 'Job Title',        value: job.role,    category: 'work' });
   }
 
