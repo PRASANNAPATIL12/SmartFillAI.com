@@ -195,6 +195,34 @@ export default function SettingsScreen({ onBack }: Props): React.ReactElement {
             </div>
           </div>
         </div>
+        {/* About */}
+        <div>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">About</p>
+          <div className="glass-card overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/40">
+              <p className="text-sm text-slate-600">SmartFillAI</p>
+              <p className="text-xs text-slate-400">v1.0.0</p>
+            </div>
+            <div className="px-4 py-3 flex items-center justify-between border-b border-white/40">
+              <p className="text-sm text-slate-600">Privacy policy</p>
+              <a
+                href="https://smartfillai.com/privacy"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-sky-600 hover:text-sky-700 transition-colors"
+              >
+                smartfillai.com/privacy →
+              </a>
+            </div>
+            <div className="px-4 py-3">
+              <p className="text-xs text-slate-400 leading-relaxed">
+                Your profile data is stored locally on this device. When cloud sync is enabled,
+                it is encrypted in transit and stored in your private Supabase account. AI features
+                send only field labels — never your profile values — to GROQ or Gemini.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

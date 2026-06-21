@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — SmartFillAI</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 720px;
+      margin: 60px auto;
+      padding: 0 24px 80px;
+      color: #1e293b;
+      line-height: 1.7;
+    }
+    h1 { font-size: 2rem; font-weight: 700; margin-bottom: 4px; }
+    h2 { font-size: 1.15rem; font-weight: 600; margin-top: 2rem; color: #0ea5e9; }
+    p, li { font-size: 0.95rem; color: #334155; }
+    ul { padding-left: 1.4rem; }
+    .meta { font-size: 0.85rem; color: #94a3b8; margin-bottom: 2rem; }
+    .highlight {
+      background: #f0f9ff;
+      border-left: 3px solid #0ea5e9;
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin: 1.5rem 0;
+    }
+    a { color: #0ea5e9; }
+  </style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<p class="meta">SmartFillAI · Last updated: June 2026</p>
+
+<div class="highlight">
+  <strong>Short version:</strong> SmartFillAI stores your profile data locally on your own device.
+  Nothing is sold. Nothing is shared with advertisers. AI features send only field labels to external
+  providers — never your personal values.
+</div>
+
+<h2>1. What We Collect</h2>
+<p>SmartFillAI collects only what you explicitly provide:</p>
+<ul>
+  <li><strong>Profile data</strong> — name, contact info, work history, education, and other fields
+      you add manually or import from a resume. Stored locally in your browser via
+      <code>chrome.storage.local</code> and IndexedDB.</li>
+  <li><strong>Remembered answers</strong> — questions and answers the extension learns from your
+      form submissions. Stored locally in IndexedDB.</li>
+  <li><strong>Uploaded documents</strong> — resume files and other documents you upload. Stored
+      locally in IndexedDB; never transmitted unless you enable cloud sync.</li>
+  <li><strong>Account email</strong> — if you create an account for cloud sync (optional). Stored
+      in Supabase under your own private row-level-security-protected account.</li>
+</ul>
+
+<h2>2. What We Do NOT Collect</h2>
+<ul>
+  <li>Browsing history or URLs you visit</li>
+  <li>Form values you type on websites (only the field labels are ever sent to AI)</li>
+  <li>Device identifiers, IP addresses, or analytics data</li>
+  <li>Any data from non-form page content</li>
+</ul>
+
+<h2>3. AI Features — What Is Sent to Third Parties</h2>
+<p>
+  SmartFillAI uses AI to classify ambiguous form fields and generate essay-style answers.
+  The following data is sent to GROQ or Google Gemini when those features are used:
+</p>
+<ul>
+  <li><strong>Field classification (Step 6):</strong> Only field label text (e.g., "First Name",
+      "Work Authorization"). Never your actual profile values.</li>
+  <li><strong>Essay generation:</strong> The field label/question text and, if you have one, your
+      stored essay preference (a seed text you control). Never your full profile.</li>
+  <li><strong>Resume parsing:</strong> The resume text or PDF you upload, processed only to extract
+      structured profile entries. The resume is sent once; SmartFillAI does not retain a copy on
+      any server.</li>
+</ul>
+<p>These requests are made from your browser's extension service worker directly to the AI provider.
+   SmartFillAI does not have an intermediary server that receives or logs these requests.</p>
+
+<h2>4. Cloud Sync (Optional)</h2>
+<p>
+  If you create a SmartFillAI account and enable cloud sync, your profile data is:
+</p>
+<ul>
+  <li>Transmitted over HTTPS (TLS) to Supabase, a third-party database provider.</li>
+  <li>Stored in a row-level-security (RLS) protected table accessible only to your user account.</li>
+  <li>Not used for any purpose other than letting you sync your profile across your own devices.</li>
+  <li>Deletable at any time: use Settings → Wipe All Data, which removes local data and triggers
+      server-side deletion.</li>
+</ul>
+<p>Cloud sync is <strong>off by default</strong>. Local-only mode works fully without an account.</p>
+
+<h2>5. Data Retention</h2>
+<ul>
+  <li>All local data persists until you uninstall the extension or use Settings → Wipe All Data.</li>
+  <li>Cloud sync data is retained until you delete it via the wipe feature or contact us.</li>
+  <li>AI requests are subject to GROQ's and Google's own data retention policies. We do not send
+      personally identifiable values to these services.</li>
+</ul>
+
+<h2>6. No Advertising or Data Sales</h2>
+<p>We do not sell, rent, trade, or share your data with any third party for advertising purposes.
+   There are no tracking pixels, no analytics SDKs, and no monetisation of user data.</p>
+
+<h2>7. Children</h2>
+<p>SmartFillAI is not directed to children under 13 and we do not knowingly collect data from
+   children.</p>
+
+<h2>8. Changes to This Policy</h2>
+<p>If we make material changes, we will update the "Last updated" date above and notify users
+   via a popup notice in the extension on next open.</p>
+
+<h2>9. Contact</h2>
+<p>Questions about this policy? Contact us at
+   <a href="mailto:privacy@smartfillai.com">privacy@smartfillai.com</a>.</p>
+
+</body>
+</html>
