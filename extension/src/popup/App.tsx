@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import type { AIProviderName } from '@/ai-providers';
-import { getProviderConfig } from '@/ai-providers';
 import { sendToBackground } from './utils/messages';
 import LoginScreen    from './components/LoginScreen';
 import HomeScreen     from './components/HomeScreen';
@@ -18,25 +16,44 @@ interface SessionInfo {
   expiresAt: number;
 }
 
+/**
+ * Subpages (profile, settings, etc.) need a definite parent height so
+ * their internal `flex-1 overflow-y-auto` scroll containers work correctly.
+ * We match the home screen's natural content height (~520px) so the popup
+ * size stays consistent when switching screens.
+ */
+function SubpageFrame({ children }: { children: React.ReactNode }): React.ReactElement {
+  return (
+    <div style={{ height: '520px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {children}
+    </div>
+  );
+}
+
 export default function App(): React.ReactElement {
-  const [screen,   setScreen]   = useState<Screen>('loading');
-  const [provider, setProvider] = useState<AIProviderName>('gemini');
-  const [session,  setSession]  = useState<SessionInfo | null>(null);
+  const [screen,  setScreen]  = useState<Screen>('loading');
+  const [session, setSession] = useState<SessionInfo | null>(null);
 
   useEffect(() => {
     async function bootstrap(): Promise<void> {
-      // AI key is bundled at build time — there's no setup/key-entry step.
-      // Go straight to home; just read the provider for the header badge and
-      // check for an optional cloud session.
-      try {
-        const cfg = await getProviderConfig();
-        setProvider(cfg.provider);
-      } catch { /* fall back to default provider badge */ }
-
+      let hasSession = false;
       try {
         const s = await sendToBackground<SessionInfo | null>('GET_SESSION');
         setSession(s);
+        hasSession = !!s;
       } catch { /* app works without a session */ }
+
+      // On first install (no session + empty profile), show login to encourage sign-in.
+      // If the user has local data but no session, respect local-only mode — go to home.
+      if (!hasSession) {
+        try {
+          const profile = await sendToBackground<{ id: string }[]>('GET_PROFILE');
+          if (profile.length === 0) {
+            setScreen('login');
+            return;
+          }
+        } catch { /* fall through to home */ }
+      }
 
       setScreen('home');
     }
@@ -45,7 +62,6 @@ export default function App(): React.ReactElement {
 
   function handleLoginSuccess(email: string): void {
     sendToBackground<SessionInfo | null>('GET_SESSION').then(s => setSession(s)).catch(() => {});
-    // Suppress unused-var warning for email — it's used to keep the callback signature clear
     void email;
     setScreen('home');
   }
@@ -65,46 +81,64 @@ export default function App(): React.ReactElement {
 
   if (screen === 'login') {
     return (
-      <LoginScreen
-        onSuccess={handleLoginSuccess}
-        onSkip={() => setScreen('home')}
-      />
+      <SubpageFrame>
+        <LoginScreen
+          onSuccess={handleLoginSuccess}
+          onSkip={() => setScreen('home')}
+        />
+      </SubpageFrame>
     );
   }
 
   if (screen === 'profile') {
     return (
-      <ProfileScreen
-        onBack={() => setScreen('home')}
-        onGoResume={() => setScreen('resume')}
-      />
+      <SubpageFrame>
+        <ProfileScreen
+          onBack={() => setScreen('home')}
+          onGoResume={() => setScreen('resume')}
+        />
+      </SubpageFrame>
     );
   }
 
   if (screen === 'resume') {
     return (
-      <ResumeScreen
-        onBack={() => setScreen('profile')}
-        onImport={() => setScreen('profile')}
-      />
+      <SubpageFrame>
+        <ResumeScreen
+          onBack={() => setScreen('profile')}
+          onImport={() => setScreen('profile')}
+        />
+      </SubpageFrame>
     );
   }
 
   if (screen === 'documents') {
-    return <DocumentsScreen onBack={() => setScreen('home')} />;
+    return (
+      <SubpageFrame>
+        <DocumentsScreen onBack={() => setScreen('home')} />
+      </SubpageFrame>
+    );
   }
 
   if (screen === 'answers') {
-    return <AnswersScreen onBack={() => setScreen('home')} />;
+    return (
+      <SubpageFrame>
+        <AnswersScreen onBack={() => setScreen('home')} />
+      </SubpageFrame>
+    );
   }
 
   if (screen === 'settings') {
-    return <SettingsScreen onBack={() => setScreen('home')} />;
+    return (
+      <SubpageFrame>
+        <SettingsScreen onBack={() => setScreen('home')} />
+      </SubpageFrame>
+    );
   }
 
+  // Home screen — no wrapper, auto-sizes to its natural content height
   return (
     <HomeScreen
-      provider={provider}
       session={session}
       onGoProfile={() => setScreen('profile')}
       onGoSettings={() => setScreen('settings')}

@@ -1,12 +1,18 @@
 import type { MessageType } from '@shared/types';
 
-/** popup → background service worker */
+/** popup → background service worker, with a 12s safety timeout */
 export function sendToBackground<T = unknown>(
   type: MessageType,
-  payload?: unknown
+  payload?: unknown,
+  timeoutMs = 12_000
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Background request timed out'));
+    }, timeoutMs);
+
     chrome.runtime.sendMessage({ type, payload }, (response) => {
+      clearTimeout(timer);
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;

@@ -3,6 +3,7 @@ import { STORAGE_KEYS } from '@shared/types';
 import { inferCanonicalKey, inferCategory, inferDisplayLabel, normalizeFieldValue, type SerializableFieldSig } from './field-learner';
 import {
   signIn,
+  signUp,
   signOut,
   getSession,
   getCurrentUserId,
@@ -542,8 +543,14 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   SIGN_IN: async (payload) => {
     const { email, password } = payload as { email: string; password: string };
     const session = await signIn(email, password);
-    // Pull cloud entries on successful login
     pullFromCloud().catch(() => {});
+    return { userId: session.userId, email: session.email };
+  },
+
+  SIGN_UP: async (payload) => {
+    const { email, password } = payload as { email: string; password: string };
+    const session = await signUp(email, password);
+    // New account — no cloud data to pull, but start sync for future pushes
     return { userId: session.userId, email: session.email };
   },
 
@@ -579,6 +586,19 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   SYNC_NOW: async () => {
     const [push, pull] = await Promise.all([pushSyncQueue(), pullFromCloud()]);
     return { pushed: push.pushed, failed: push.failed, pulled: pull.pulled };
+  },
+
+  WIPE_ALL_DATA: async () => {
+    // Wipe profile entries
+    await replaceAll([]);
+    // Wipe Q&A cache
+    await chrome.storage.local.remove(STORAGE_KEYS.QA_CACHE);
+    // Wipe all uploaded documents
+    const docs = await getAllDocumentMetas();
+    await Promise.all(docs.map(d => deleteDocument(d.id)));
+    // Sign out
+    await signOut();
+    return { ok: true };
   },
 
   // ── Documents ────────────────────────────────────────────────────────────────

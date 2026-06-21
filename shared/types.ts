@@ -383,8 +383,9 @@ export type MessageType =
   | 'STEP5_MATCH'
   | 'COMPUTE_EMBEDDINGS'
   | 'EMBED_OPTION_MATCH'
-  // Auth (Task 6.1)
+  // Auth
   | 'SIGN_IN'
+  | 'SIGN_UP'
   | 'SIGN_OUT'
   | 'GET_SESSION'
   // Step 6 LLM classifier (Task 8.1)
@@ -414,7 +415,8 @@ export type MessageType =
   | 'LEARN_FIELD'
   | 'GENERATE_ESSAY'
   | 'PARSE_RESUME'
-  | 'SYNC_NOW';
+  | 'SYNC_NOW'
+  | 'WIPE_ALL_DATA';
 
 export interface Message<T = any> {
   type: MessageType;

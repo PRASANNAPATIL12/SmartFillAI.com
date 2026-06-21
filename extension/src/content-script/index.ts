@@ -67,7 +67,16 @@ function resolvePhoneValue(storedValue: string, canonicalKey: string): string {
   return stripCountryCode(storedValue, countryValue);
 }
 let documentsMeta: DocumentMeta[] = [];
-let autoSave = true; // default; overwritten after GET_SETTINGS resolves
+let autoSave               = true;  // default; overwritten after GET_SETTINGS resolves
+let blockSensitiveDomains  = true;  // default safe; overwritten after GET_SETTINGS resolves
+
+// Patterns matched against window.location.hostname when blockSensitiveDomains is on.
+// Deliberately conservative — only obvious finance/health/gov sites.
+const SENSITIVE_HOSTNAME_RE = /\b(bank(ing)?|paypal|chase|wellsfargo|capitalone|citibank|usbank|fidelity|vanguard|schwab|etrade|robinhood|brokerage|mychart|hospital|healthcare|irs\.gov|ssa\.gov)\b/;
+
+function isSensitiveDomain(hostname: string): boolean {
+  return SENSITIVE_HOSTNAME_RE.test(hostname);
+}
 
 // ── Banner state ──────────────────────────────────────────────────────────────
 // Once the user dismisses the banner on this page load, don't re-show it.
@@ -255,8 +264,15 @@ async function init(): Promise<void> {
 
   sfaLog('profile entries loaded:', fetchedProfile.status === 'fulfilled' ? fetchedProfile.value.length : 'FAILED');
 
-  profile   = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
-  autoSave  = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave : true;
+  profile                  = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
+  autoSave                 = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave              : true;
+  blockSensitiveDomains    = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.blockSensitiveDomains : true;
+
+  // Honour the sensitive-domain blocklist before touching the page.
+  if (blockSensitiveDomains && isSensitiveDomain(window.location.hostname)) {
+    sfaLog('blocked on sensitive domain:', window.location.hostname);
+    return;
+  }
 
   // Background-load documents; re-scan once they arrive so file fields pick up
   // their docType hints. Ghost text on text/select fields is unaffected.
@@ -1709,6 +1725,11 @@ function injectStyles(): void {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'FILL_ALL') {
+    // Refuse to fill on sensitive domains when the setting is enabled
+    if (blockSensitiveDomains && isSensitiveDomain(window.location.hostname)) {
+      sendResponse({ success: false, error: 'restricted_page' });
+      return false;
+    }
     if (!isTopFrame) {
       // Sub-frame: fill self, report back, recompute counts so the next
       // frame-report carries the new unfilled state up to the top frame.

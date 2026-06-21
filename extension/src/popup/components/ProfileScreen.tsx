@@ -45,8 +45,9 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
   const [mode, setMode] = useState<Mode>('list');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<EntryForm>(DEFAULT_FORM);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     loadEntries();
@@ -131,12 +132,12 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
   }
 
   async function handleDelete(id: string): Promise<void> {
-    if (!confirm('Delete this entry?')) return;
     try {
       await sendToBackground('DELETE_ENTRY', { id });
       setEntries(prev => prev.filter(e => e.id !== id));
+      setDeletingId(null);
     } catch {
-      // silent fail — entry stays visible until next reload
+      setDeletingId(null);
     }
   }
 
@@ -186,10 +187,10 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+      <div className="glass-header flex items-center justify-between px-4 py-3">
         <button
           onClick={mode !== 'list' ? cancelForm : onBack}
-          className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700"
+          className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 transition-colors"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -212,7 +213,7 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
             )}
             <button
               onClick={openAdd}
-              className="text-sm text-sky-500 font-medium hover:text-sky-600"
+              className="text-sm text-sky-500 font-medium hover:text-sky-600 transition-colors"
             >
               + Add
             </button>
@@ -226,63 +227,93 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
 
         {/* Entry form (add or edit) */}
         {(mode === 'add' || mode === 'edit') && (
-          <div className="px-4 py-3 space-y-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-600">Field Type</label>
-              <select
-                value={form.canonical_key}
-                onChange={e => handleKeyChange(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-400 bg-white"
-              >
-                {CANONICAL_KEY_OPTIONS.map(o => (
-                  <option key={o.key} value={o.key}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="px-3 py-3 space-y-3">
+            <div className="glass-card p-4 space-y-3">
+              {/* Field Type */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Field Type</label>
+                <select
+                  value={form.canonical_key}
+                  onChange={e => handleKeyChange(e.target.value)}
+                  className="w-full px-3 py-2 text-sm bg-white/60 border border-white/70 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400"
+                >
+                  {CANONICAL_KEY_OPTIONS.map(o => (
+                    <option key={o.key} value={o.key}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-600">Display Label</label>
-              <input
-                type="text"
-                value={form.display_label}
-                onChange={e => setForm(f => ({ ...f, display_label: e.target.value }))}
-                placeholder="e.g. Work Email"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-400"
-              />
-            </div>
+              {/* Display Label */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Display Label</label>
+                <input
+                  type="text"
+                  value={form.display_label}
+                  onChange={e => setForm(f => ({ ...f, display_label: e.target.value }))}
+                  placeholder="e.g. Work Email"
+                  className="w-full px-3 py-2 text-sm bg-white/60 border border-white/70 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400 placeholder-slate-400"
+                />
+              </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-600">Value</label>
-              <input
-                type={form.sensitive ? 'password' : 'text'}
-                autoComplete="off"
-                value={form.value}
-                onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
-                placeholder="Enter value…"
-                className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-sky-400"
-              />
-            </div>
+              {/* Value */}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1.5">Value</label>
+                <input
+                  type={form.sensitive ? 'password' : 'text'}
+                  autoComplete="off"
+                  value={form.value}
+                  onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
+                  placeholder="Enter value…"
+                  className="w-full px-3 py-2 text-sm bg-white/60 border border-white/70 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-sky-400 placeholder-slate-400"
+                />
+              </div>
 
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-slate-600">Mark as sensitive</label>
-              <button
-                type="button"
+              {/* Sensitive toggle */}
+              <div
+                className="flex items-center justify-between cursor-pointer"
                 onClick={() => setForm(f => ({ ...f, sensitive: !f.sensitive }))}
-                className={`relative w-9 h-5 rounded-full transition-colors ${form.sensitive ? 'bg-sky-500' : 'bg-slate-200'}`}
               >
-                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.sensitive ? 'translate-x-4' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
+                <div>
+                  <p className="text-sm font-medium text-slate-700">Mark as sensitive</p>
+                  <p className="text-xs text-slate-400 mt-0.5">Value will be masked in the profile list</p>
+                </div>
+                <div
+                  role="switch"
+                  aria-checked={form.sensitive}
+                  className={`relative flex-shrink-0 w-10 h-[22px] rounded-full transition-colors duration-200 ${
+                    form.sensitive ? 'bg-sky-500' : 'bg-slate-300'
+                  }`}
+                  onClick={e => { e.stopPropagation(); setForm(f => ({ ...f, sensitive: !f.sensitive })); }}
+                >
+                  <span
+                    className={`absolute top-[3px] w-4 h-4 bg-white rounded-full shadow-sm transition-transform duration-200 ${
+                      form.sensitive ? 'translate-x-[22px]' : 'translate-x-[3px]'
+                    }`}
+                  />
+                </div>
+              </div>
 
-            {error && <p className="text-xs text-red-500">{error}</p>}
+              {/* Error */}
+              {error && (
+                <div className="flex items-start gap-2 bg-red-50/80 border border-red-200/60 rounded-lg px-3 py-2">
+                  <svg className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd"
+                      d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                      clipRule="evenodd" />
+                  </svg>
+                  <p className="text-xs text-red-600">{error}</p>
+                </div>
+              )}
+            </div>
 
             <button
               onClick={handleSave}
               disabled={saving}
-              className="w-full py-2 text-sm font-medium text-white bg-sky-500 hover:bg-sky-600 disabled:opacity-50 rounded-lg transition-colors"
+              className="w-full py-2.5 text-sm font-semibold text-white bg-sky-500 hover:bg-sky-600 active:bg-sky-700 disabled:opacity-50 rounded-xl transition-colors shadow-sm shadow-sky-200 flex items-center justify-center gap-2"
             >
+              {saving && <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
               {saving ? 'Saving…' : mode === 'add' ? 'Add Entry' : 'Save Changes'}
             </button>
           </div>
@@ -305,7 +336,7 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
                 </p>
                 <button
                   onClick={openAdd}
-                  className="mt-3 px-4 py-1.5 text-sm text-white bg-sky-500 hover:bg-sky-600 rounded-lg"
+                  className="mt-3 px-4 py-1.5 text-sm text-white bg-sky-500 hover:bg-sky-600 rounded-xl"
                 >
                   Add First Entry
                 </button>
@@ -315,72 +346,102 @@ export default function ProfileScreen({ onBack, onGoResume }: Props): React.Reac
             {!loading && Object.entries(grouped).map(([cat, catEntries]) => {
               const keyGroups = groupByKey(catEntries);
               return (
-                <div key={cat}>
-                  <p className="px-4 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wide bg-slate-50 border-b border-slate-100">
+                <div key={cat} className="px-3 pt-2.5">
+                  <p className="px-1 pb-1 text-xs font-semibold text-slate-400 uppercase tracking-wide">
                     {CATEGORY_LABELS[cat as EntryCategory] ?? cat}
                   </p>
-                  {[...keyGroups.entries()].map(([, keyEntries]) =>
-                    keyEntries.map((entry, idx) => {
-                      const isDefault = (entry.priority ?? 0) === 0;
-                      const hasAlts = keyEntries.length > 1;
-                      return (
-                        <div
-                          key={entry.id}
-                          className={`flex items-center gap-3 px-4 py-2.5 border-b border-slate-50 hover:bg-slate-50 group ${!isDefault && hasAlts ? 'pl-8' : ''}`}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <p className="text-sm text-slate-700 truncate">{entry.display_label}</p>
-                              {isDefault && hasAlts && (
-                                <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium bg-indigo-50 text-indigo-600 rounded">
-                                  default
-                                </span>
-                              )}
-                              {hasAlts && idx === 0 && (
-                                <span className="shrink-0 text-[10px] text-slate-400">
-                                  +{keyEntries.length - 1}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs text-slate-400 truncate">
-                              {entry.sensitive ? maskValue(entry.value) : entry.value}
-                            </p>
-                          </div>
-                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {!isDefault && hasAlts && (
-                              <button
-                                onClick={() => handleSetDefault(entry.id)}
-                                title="Set as default"
-                                className="px-1.5 py-0.5 text-[10px] font-medium text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
-                              >
-                                Default
-                              </button>
+                  <div className="glass-card overflow-hidden mb-2">
+                    {[...keyGroups.entries()].map(([, keyEntries], groupIdx) =>
+                      keyEntries.map((entry, idx) => {
+                        const isDefault = (entry.priority ?? 0) === 0;
+                        const hasAlts = keyEntries.length > 1;
+                        const isLast = groupIdx === keyGroups.size - 1 && idx === keyEntries.length - 1;
+                        return (
+                          <div
+                            key={entry.id}
+                            className={`flex items-center gap-3 px-4 py-2.5 hover:bg-white/50 group transition-colors ${!isLast ? 'border-b border-white/40' : ''} ${!isDefault && hasAlts ? 'pl-8' : ''}`}
+                          >
+                            {deletingId === entry.id ? (
+                              /* Inline delete confirmation */
+                              <>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-medium text-red-600 truncate">Delete "{entry.display_label}"?</p>
+                                  <p className="text-xs text-slate-400">This cannot be undone.</p>
+                                </div>
+                                <div className="flex gap-1 flex-shrink-0">
+                                  <button
+                                    onClick={() => setDeletingId(null)}
+                                    className="px-2 py-1 text-xs bg-white/60 border border-white/70 text-slate-600 rounded-lg hover:bg-white/80 transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(entry.id)}
+                                    className="px-2 py-1 text-xs bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              /* Normal entry view */
+                              <>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <p className="text-sm text-slate-700 truncate">{entry.display_label}</p>
+                                    {isDefault && hasAlts && (
+                                      <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium bg-indigo-50/80 text-indigo-600 rounded">
+                                        default
+                                      </span>
+                                    )}
+                                    {hasAlts && idx === 0 && (
+                                      <span className="shrink-0 text-[10px] text-slate-400">
+                                        +{keyEntries.length - 1}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-slate-400 truncate">
+                                    {entry.sensitive ? maskValue(entry.value) : entry.value}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  {!isDefault && hasAlts && (
+                                    <button
+                                      onClick={() => handleSetDefault(entry.id)}
+                                      title="Set as default"
+                                      className="px-1.5 py-0.5 text-[10px] font-medium text-indigo-500 hover:bg-indigo-50/60 rounded transition-colors"
+                                    >
+                                      Default
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => openEdit(entry)}
+                                    title="Edit"
+                                    className="p-1.5 rounded-lg hover:bg-white/70 text-slate-400 hover:text-slate-600 transition-colors"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                        d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    onClick={() => setDeletingId(entry.id)}
+                                    title="Delete"
+                                    className="p-1.5 rounded-lg hover:bg-red-50/60 text-slate-400 hover:text-red-500 transition-colors"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </>
                             )}
-                            <button
-                              onClick={() => openEdit(entry)}
-                              title="Edit"
-                              className="p-1.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-600"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => handleDelete(entry.id)}
-                              title="Delete"
-                              className="p-1.5 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"
-                            >
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                            </button>
                           </div>
-                        </div>
-                      );
-                    })
-                  )}
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               );
             })}

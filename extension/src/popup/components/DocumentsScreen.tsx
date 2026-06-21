@@ -115,9 +115,11 @@ export default function DocumentsScreen({ onBack }: Props): React.ReactElement {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
-        <button onClick={onBack}
-          className="p-1 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors">
+      <div className="glass-header flex items-center gap-2 px-4 py-3">
+        <button
+          onClick={onBack}
+          className="glass-btn-icon text-slate-600 hover:text-slate-800"
+        >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
@@ -130,25 +132,27 @@ export default function DocumentsScreen({ onBack }: Props): React.ReactElement {
 
       {/* Status banner */}
       {status === 'uploading' && (
-        <div className="mx-4 mt-3 px-3 py-2 bg-sky-50 text-sky-700 text-xs rounded-lg flex items-center gap-2">
-          <span className="w-3 h-3 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
-          Uploading & parsing...
+        <div className="mx-3 mt-3 px-3 py-2 bg-sky-50/80 border border-sky-100 text-sky-700 text-xs rounded-xl flex items-center gap-2">
+          <span className="w-3 h-3 border-2 border-sky-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          Uploading &amp; parsing…
         </div>
       )}
       {status === 'done' && (
-        <div className="mx-4 mt-3 px-3 py-2 bg-emerald-50 text-emerald-700 text-xs rounded-lg">
-          Document uploaded successfully.
+        <div className="mx-3 mt-3 px-3 py-2 bg-emerald-50/80 border border-emerald-100 text-emerald-700 text-xs rounded-xl flex items-center gap-2">
+          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          Uploaded successfully.
         </div>
       )}
       {status === 'error' && error && (
-        <div className="mx-4 mt-3 px-3 py-2 bg-red-50 text-red-700 text-xs rounded-lg">
+        <div className="mx-3 mt-3 px-3 py-2 bg-red-50/80 border border-red-100 text-red-700 text-xs rounded-xl">
           {error}
         </div>
       )}
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {/* Resume section */}
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
         <DocTypeSection
           label={DOC_TYPE_LABELS.resume}
           docs={resumes}
@@ -156,8 +160,6 @@ export default function DocumentsScreen({ onBack }: Props): React.ReactElement {
           onDelete={handleDelete}
           onSetDefault={handleSetDefault}
         />
-
-        {/* Cover Letter section */}
         <DocTypeSection
           label={DOC_TYPE_LABELS.cover_letter}
           docs={coverLetters}
@@ -177,60 +179,112 @@ function DocTypeSection({ label, docs, onUpload, onDelete, onSetDefault }: {
   onDelete: (id: string) => void;
   onSetDefault: (id: string) => void;
 }): React.ReactElement {
+  const [deletingId, setDeletingId] = React.useState<string | null>(null);
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</span>
-        <button onClick={onUpload}
-          className="text-xs text-sky-500 hover:underline font-medium">
+      {/* Section header */}
+      <div className="flex items-center justify-between px-1 mb-2">
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wide">{label}</span>
+        <button
+          onClick={onUpload}
+          className="text-xs font-medium text-sky-600 hover:text-sky-700 transition-colors"
+        >
           {docs.length === 0 ? 'Upload' : 'Add'}
         </button>
       </div>
 
       {docs.length === 0 ? (
-        <div className="bg-slate-50 rounded-xl p-3 text-center">
-          <p className="text-xs text-slate-400">
-            No {label.toLowerCase()} uploaded yet.
-          </p>
-          <button onClick={onUpload}
-            className="mt-1.5 text-xs text-sky-500 font-medium hover:underline">
+        /* Empty state */
+        <div className="glass-card px-4 py-5 flex flex-col items-center text-center">
+          <div className="w-9 h-9 rounded-xl bg-slate-100/70 flex items-center justify-center mb-2">
+            <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <p className="text-xs text-slate-400 mb-2">No {label.toLowerCase()} uploaded yet.</p>
+          <button
+            onClick={onUpload}
+            className="text-xs font-semibold text-sky-600 hover:text-sky-700 bg-sky-50/80 hover:bg-sky-100/80 px-3 py-1.5 rounded-lg transition-colors border border-sky-100"
+          >
             Upload {label.split(' ')[0]}
           </button>
         </div>
       ) : (
-        <div className="space-y-2">
-          {docs.map(doc => (
-            <div key={doc.id}
-              className="bg-slate-50 rounded-xl px-3 py-2 flex items-center justify-between">
+        /* Document list */
+        <div className="glass-card overflow-hidden">
+          {docs.map((doc, idx) => (
+            <div
+              key={doc.id}
+              className={`flex items-center gap-3 px-4 py-3 hover:bg-white/50 transition-colors group ${
+                idx < docs.length - 1 ? 'border-b border-white/40' : ''
+              }`}
+            >
+              {/* File icon */}
+              <div className="w-8 h-8 rounded-lg bg-sky-50/80 flex items-center justify-center flex-shrink-0">
+                <svg className="w-4 h-4 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+
+              {/* File info */}
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <p className="text-xs font-medium text-slate-700 truncate">{doc.fileName}</p>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-sm font-medium text-slate-700 truncate">{doc.fileName}</p>
                   {doc.isDefault && (
-                    <span className="text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                    <span className="text-[10px] font-semibold bg-emerald-100/80 text-emerald-700 px-1.5 py-0.5 rounded-full whitespace-nowrap border border-emerald-200/50">
                       default
                     </span>
                   )}
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {humanSize(doc.fileSize)} &middot; {timeAgo(doc.updatedAt)}
+                  {humanSize(doc.fileSize)} · {timeAgo(doc.updatedAt)}
                 </p>
               </div>
-              <div className="flex items-center gap-1 ml-2 flex-shrink-0">
-                {!doc.isDefault && (
-                  <button onClick={() => onSetDefault(doc.id)} title="Set as default"
-                    className="p-1 rounded-md hover:bg-slate-200 text-slate-400 hover:text-emerald-600 transition-colors">
+
+              {/* Actions / inline confirmation */}
+              {deletingId === doc.id ? (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button
+                    onClick={() => setDeletingId(null)}
+                    className="px-2 py-1 text-xs bg-white/60 border border-white/70 text-slate-600 rounded-lg hover:bg-white/80 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => { onDelete(doc.id); setDeletingId(null); }}
+                    className="px-2 py-1 text-xs bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                  >
+                    Delete
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {!doc.isDefault && (
+                    <button
+                      onClick={() => onSetDefault(doc.id)}
+                      title="Set as default"
+                      className="p-1.5 rounded-lg hover:bg-emerald-50/80 text-slate-400 hover:text-emerald-600 transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setDeletingId(doc.id)}
+                    title="Delete"
+                    className="p-1.5 rounded-lg hover:bg-red-50/60 text-slate-400 hover:text-red-500 transition-colors"
+                  >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                     </svg>
                   </button>
-                )}
-                <button onClick={() => onDelete(doc.id)} title="Delete"
-                  className="p-1 rounded-md hover:bg-slate-200 text-slate-400 hover:text-red-500 transition-colors">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                </button>
-              </div>
+                </div>
+              )}
             </div>
           ))}
         </div>
