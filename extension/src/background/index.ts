@@ -635,8 +635,8 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
-      } catch {
-        // Parse failure shouldn't block document storage
+      } catch (err) {
+        console.warn('[SmartFillAI] resume parse failed — document saved but no profile entries created:', err);
       }
     }
 
@@ -658,7 +658,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     await saveDocument(doc);
     refreshDocumentsMetaCache().catch(() => {});
     if (docType === 'resume') {
-      clearLlmAnswers().catch(() => {});
+      try { await clearLlmAnswers(); } catch { /* non-fatal */ }
       if (extractedText) {
         generateAndStoreResumeQA(extractedText).catch(err =>
           console.warn('[SmartFillAI] resume QA generation error', err));
@@ -712,7 +712,9 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        console.warn('[SmartFillAI] resume re-parse failed:', err);
+      }
     }
 
     await saveDocument({
@@ -726,7 +728,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     });
     refreshDocumentsMetaCache().catch(() => {});
     if (existing.docType === 'resume') {
-      clearLlmAnswers().catch(() => {});
+      try { await clearLlmAnswers(); } catch { /* non-fatal */ }
       const newText = extractedText ?? existing.extractedText;
       if (newText) {
         generateAndStoreResumeQA(newText).catch(err =>
