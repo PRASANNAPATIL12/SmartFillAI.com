@@ -49,7 +49,8 @@ interface FieldState {
 const matchMap = new Map<HTMLElement, FieldState>();
 let profile: ProfileEntry[] = [];
 let profileLoaded = false;
-let scanTimer: ReturnType<typeof setTimeout> | undefined;
+let scanTimer:    ReturnType<typeof setTimeout> | undefined;
+let maxScanTimer: ReturnType<typeof setTimeout> | undefined;
 
 // When the page has a separate phone_country_code field, the phone_number
 // input expects only the local number. Scanning matchMap for a sibling
@@ -1837,15 +1838,35 @@ if (document.readyState === 'loading') {
   init();
 }
 
-// Debounced re-scan on DOM mutations (SPA route changes render new forms)
-const observer = new MutationObserver(() => {
-  // Immediately remove ghost text for any field that was just removed from the DOM
-  // (e.g. a login modal closed without the user filling it).  No layout reads,
-  // so this is cheap enough to run on every mutation.
-  sweepDisconnectedGhosts();
+// Debounced re-scan on DOM mutations (SPA route changes render new forms).
+//
+// Two-timer pattern: a 300ms quiet-time debounce (reset on every mutation) +
+// a 2 s ceiling timer (set once per burst, never reset). Whichever fires first
+// wins and cancels the other. This guarantees a scan always completes even
+// during React/Next.js hydration bursts that produce >300 ms of continuous
+// mutations and would otherwise starve the plain debounce indefinitely.
+function scheduleScan(): void {
   clearTimeout(scanTimer);
-  // scanFields is async; the returned Promise is intentionally ignored here
-  scanTimer = setTimeout(() => { scanFields().catch(() => {}); }, 300);
+  scanTimer = setTimeout(() => {
+    clearTimeout(maxScanTimer);
+    maxScanTimer = undefined;
+    scanFields().catch(() => {});
+  }, 300);
+
+  if (maxScanTimer === undefined) {
+    maxScanTimer = setTimeout(() => {
+      clearTimeout(scanTimer);
+      maxScanTimer = undefined;
+      scanFields().catch(() => {});
+    }, 2000);
+  }
+}
+
+const observer = new MutationObserver(() => {
+  // Immediately remove ghost text for any field that was just removed from the
+  // DOM (e.g. a login modal closed). No layout reads, so this is cheap.
+  sweepDisconnectedGhosts();
+  scheduleScan();
 });
 
 function startObserver(): void {
