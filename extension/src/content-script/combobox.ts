@@ -27,35 +27,6 @@ const sfaLog = (...args: unknown[]): void => {
   }
 };
 
-// TEMPORARY DIAGNOSTIC — unconditional. Tagged [SFA-DIAG] so it's easy to
-// copy from the console and easy to grep-remove once the dropdown issue is
-// pinned down. Remove before merging PR1.
-const diag = (...args: unknown[]): void => { console.log('[SFA-DIAG]', ...args); };
-
-/** Snapshot every dropdown-ish container currently in the DOM — used when our
- *  known panel selectors find nothing, to reveal the widget's real structure. */
-function diagDumpPanels(): void {
-  const sel = [
-    '[role="listbox"]', '[role="menu"]', '[role="grid"]', 'ul[class]',
-    '[class*="dropdown" i]', '[class*="menu" i]', '[class*="options" i]',
-    '[class*="select" i]', '[class*="listbox" i]', '[class*="popover" i]',
-  ].join(',');
-  const found = Array.from(document.querySelectorAll<HTMLElement>(sel))
-    .filter(el => {
-      const s = window.getComputedStyle(el);
-      return s.display !== 'none' && s.visibility !== 'hidden' && el.offsetParent !== null;
-    })
-    .slice(0, 15)
-    .map(el => ({
-      tag: el.tagName,
-      role: el.getAttribute('role'),
-      class: (el.getAttribute('class') ?? '').slice(0, 80),
-      childOptionish: el.querySelectorAll('[role="option"], li, [class*="option" i]').length,
-      sampleText: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 120),
-    }));
-  diag('visible dropdown-ish containers after open:', found);
-}
-
 /**
  * Mark a combobox/button-dropdown control as having failed to find a
  * matching option. Visible via `[data-ditto-status="FILL_FAILED"]` so the
@@ -364,7 +335,6 @@ async function clickOption(
   }
 
   const committed = getComboboxDisplayValue(el).length > 0;
-  diag('clickOption', { pickText: (pick.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40), committed, menuStillOpen: findListbox(el) !== null });
   return committed;
 }
 
@@ -465,13 +435,6 @@ export async function fillCombobox(
     if (listbox && getOptions(listbox).length > 0) break;
   }
 
-  diag('fillCombobox', {
-    value, aliases,
-    listboxFound: !!listbox,
-    optionCount: listbox ? getOptions(listbox).length : 0,
-    optionsSample: listbox ? getOptions(listbox).slice(0, 8).map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim()) : [],
-  });
-
   // ── 4. Primary path: find option in the UNFILTERED open list ─────────────
   // Greenhouse, Lever, Ashby and most ATSes show ALL options when the menu
   // first opens. Finding the match here means we never call writeValue at all:
@@ -486,7 +449,6 @@ export async function fillCombobox(
     if (cachedText) pick = opts.find((_o, i) => optTexts[i] === cachedText);
 
     if (!pick) pick = opts.find(o => optionMatches(o, aliases));
-    diag('fillCombobox primary pick', { found: !!pick, pickText: pick ? (pick.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) : null });
     if (pick) {
       const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
       const ok = await clickOption(el, pick, listbox);
@@ -595,12 +557,6 @@ export async function fillButtonDropdown(
         ? expandValueAliases(canonicalKey, value)
         : [value];
 
-  diag('fillButtonDropdown ENTER', {
-    tag: el.tagName, role: el.getAttribute('role'),
-    class: (el.getAttribute('class') ?? '').slice(0, 80),
-    value, canonicalKey, aliases,
-  });
-
   // ── 1. Click the trigger to open the panel ───────────────────────────────
   el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
   el.dispatchEvent(new MouseEvent('mouseup',   { bubbles: true, cancelable: true }));
@@ -641,8 +597,6 @@ export async function fillButtonDropdown(
   }
 
   if (!panel) {
-    diag('fillButtonDropdown: NO PANEL found via known selectors ([role=listbox], ul.country-list). Dumping DOM:');
-    diagDumpPanels();
     markFillFailed(el, value, []);
     return false;
   }
@@ -654,23 +608,16 @@ export async function fillButtonDropdown(
 
   const optionTexts = options.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
 
-  diag('fillButtonDropdown PANEL found', {
-    panelTag: panel.tagName, panelClass: (panel.getAttribute('class') ?? '').slice(0, 80),
-    optionCount: options.length, optionsSample: optionTexts.slice(0, 20),
-  });
-
   // Cache 3 — option-resolution lookup. If we (or another site with the same
   // option set) resolved this value before, pick that option directly.
   let pick: HTMLElement | undefined;
   const cachedText = await getResolvedOption(optionTexts, value);
   if (cachedText) {
     pick = options.find((_o, i) => optionTexts[i] === cachedText);
-    diag('fillButtonDropdown cache3', { cachedText, hit: !!pick });
   }
 
   if (!pick) {
     pick = options.find(o => optionMatches(o, aliases));
-    diag('fillButtonDropdown alias match', { aliases, hit: !!pick, pickText: pick ? (pick.textContent ?? '').trim() : null });
   }
 
   // Phase A.4 — embedding fallback when alias matching returns nothing.

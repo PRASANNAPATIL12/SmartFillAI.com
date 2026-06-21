@@ -10,7 +10,6 @@ export const comboboxHandler: FieldHandler = {
   },
 
   async fill(el: HTMLElement, value: string, ctx: FillContext): Promise<boolean> {
-    console.log('[SFA-DIAG] fillElement → fillCombobox', { value, canonicalKey: ctx.canonicalKey });
     return fillCombobox(el as HTMLInputElement | HTMLTextAreaElement, value, ctx.canonicalKey);
   },
 

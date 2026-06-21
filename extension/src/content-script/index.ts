@@ -3,9 +3,6 @@
 const SFA_DEBUG = (window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true;
 const sfaLog = (...args: unknown[]): void => { if (SFA_DEBUG) console.log('[SmartFillAI]', ...args); };
 
-// TEMPORARY DIAGNOSTIC — unconditional. Tagged [SFA-DIAG], grep-removable.
-// Remove before merging PR1.
-const diag = (...args: unknown[]): void => { console.log('[SFA-DIAG]', ...args); };
 
 sfaLog(
   'content script loaded on',
@@ -762,24 +759,6 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     await scanFields();
   }
 
-  // TEMPORARY DIAGNOSTIC — snapshot every detected field and its classification
-  // so we can see whether the country picker is detected, what canonical_key it
-  // got, and whether it has a profile value. Remove before merging PR1.
-  diag('=== FILL START — matchMap snapshot ===');
-  for (const [el, st] of matchMap) {
-    if (st.result.status === 'SKIP') continue;
-    diag('field', {
-      tag: el.tagName,
-      role: el.getAttribute('role'),
-      label: (st.sig.label || st.sig.ariaLabel || st.sig.name || st.sig.id || '').slice(0, 50),
-      status: st.result.status,
-      canonical: st.entry?.canonical_key ?? null,
-      profileValue: st.entry?.value ?? null,
-      docType: st.result.docType ?? null,
-      reason: (st.result.reason ?? '').slice(0, 60),
-    });
-  }
-
   let filled = 0;
   let skipped = 0;
 
@@ -839,7 +818,6 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     if (!label) continue;
 
     let remembered = await getRememberedAnswer(label);
-    let matchSource = 'exact';
     if (!remembered) {
       try {
         const fuzzy = await sendToBackground<{ answer: string | null; similarity?: number; matchedQuestion?: string }>(
@@ -847,7 +825,6 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
         );
         if (fuzzy?.answer) {
           remembered = fuzzy.answer;
-          matchSource = 'fuzzy';
         }
       } catch { /* embedding model not ready — skip fuzzy */ }
     }
@@ -858,11 +835,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     // detectable, defer to the LLM tier, which re-synthesizes using this
     // remembered answer as a seed. Factual answers always replay verbatim.
     if (classifyAnswerKind(label, el) === 'narrative' && detectCompany().name) {
-      diag('qa-replay deferred to synthesis (narrative)', { label: label.slice(0, 50) });
       continue;
     }
 
-    diag('qa-replay', { label: label.slice(0, 50), remembered, matchSource, kind: isDropdown ? 'dropdown' : 'text' });
     const ok = await fillElement(el, remembered);
     if (ok) filled++;
   }
@@ -915,20 +890,16 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
 
     llmCalls++;
-    diag('llm-tier calling ANSWER_FIELD', { label: label.slice(0, 60), optionCount: options.length, isDropdown, isText });
     let resp: { answer: string | null; confidence: number } | null = null;
     try {
       resp = await sendToBackground<{ answer: string | null; confidence: number }>(
         'ANSWER_FIELD', { question: label, options, company: companyName || undefined, seedAnswer: seed || undefined }
       );
-      diag('llm-tier response', { label: label.slice(0, 60), answer: resp?.answer, confidence: resp?.confidence });
-    } catch (err) {
-      diag('llm-tier ERROR', { label: label.slice(0, 60), error: String(err) });
+    } catch {
       resp = null;
     }
     if (!resp?.answer) continue;
 
-    diag('llm-answer', { label: label.slice(0, 50), answer: resp.answer, confidence: resp.confidence });
     const ok = await fillElement(el, resp.answer);
     if (ok) {
       filled++;
@@ -1214,18 +1185,6 @@ function tryLearnField(el: HTMLElement): void {
   // from this display read — so don't learn the garbage here.
   if ((comboLike || isButton) && /^\+\d{1,4}$/.test(value)) return;
 
-  // TEMPORARY DIAGNOSTIC — only when there's an actual captured value, so the
-  // 2.5s sweep over empty dropdowns doesn't spam the console. Remove with the
-  // other [SFA-DIAG] logs before merge.
-  if ((comboLike || isButton) && value) {
-    diag('tryLearnField (dropdown)', {
-      label: (state.sig.label || state.sig.ariaLabel || state.sig.name || '').slice(0, 50),
-      status: state.result.status,
-      comboLike, isButton,
-      capturedValue: value,
-      existingValue: state.entry?.value ?? null,
-    });
-  }
   if (!value) return;
 
   // ── UNKNOWN → learn ──
@@ -1249,7 +1208,6 @@ function tryLearnField(el: HTMLElement): void {
     // "end date year = 35 days". Short attribute-ish labels still flow into
     // the profile so genuine custom fields (a new social link, etc.) enrich it.
     if (isQuestionLikeLabel(label)) {
-      diag('learn → qa-cache (question text field)', { label: label.slice(0, 50), value });
       rememberAnswer(label, value).catch(() => {});
       sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
       return;
@@ -1484,8 +1442,6 @@ function learnDropdownSelection(el: HTMLElement, optionText: string): void {
   const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
              || state.sig.name  || state.sig.id || '';
 
-  diag('learnDropdownSelection', { label: label.slice(0, 50), status: state.result.status, optionText });
-
   // 1. Always remember the answer keyed by the question text (works for both
   //    question-style dropdowns AND attribute dropdowns).
   if (label) {
@@ -1590,9 +1546,6 @@ async function doLearnField(el: HTMLElement, sig: FieldSignature, value: string)
     if (/junk canonical|Refusing to learn/i.test(msg)) {
       const label = sig.label || sig.ariaLabel || sig.placeholder || '';
       if (label && value) {
-        diag('learn → qa-cache (fallback from LEARN_FIELD)', {
-          label: label.slice(0, 60), value: value.slice(0, 80),
-        });
         rememberAnswer(label, value).catch(() => {});
         sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
       }

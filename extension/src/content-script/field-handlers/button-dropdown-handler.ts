@@ -16,7 +16,6 @@ export const buttonDropdownHandler: FieldHandler = {
   },
 
   async fill(el: HTMLElement, value: string, ctx: FillContext): Promise<boolean> {
-    console.log('[SFA-DIAG] fillElement → fillButtonDropdown', { tag: el.tagName, role: el.getAttribute('role'), value, canonicalKey: ctx.canonicalKey });
     return fillButtonDropdown(el, value, ctx.canonicalKey);
   },
 

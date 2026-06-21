@@ -11,7 +11,6 @@ export const selectHandler: FieldHandler = {
 
   async fill(el: HTMLElement, value: string, ctx: FillContext): Promise<boolean> {
     const sel = el as HTMLSelectElement;
-    console.log('[SFA-DIAG] fillElement → fillSelect', { value, canonicalKey: ctx.canonicalKey, optionCount: sel.options.length });
     return fillSelect(sel, value, ctx.canonicalKey);
   },
 
