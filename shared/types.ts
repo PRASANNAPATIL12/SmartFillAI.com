@@ -172,12 +172,19 @@ export interface Resume {
 export interface ResumeParseResult {
   personal: {
     name?: string;
+    first_name?: string;
+    last_name?: string;
     email?: string;
     phone?: string;
     linkedin?: string;
     github?: string;
     portfolio?: string;
     location?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    nationality?: string;
+    date_of_birth?: string;
   };
   education: Array<{
     institution: string;
@@ -193,6 +200,9 @@ export interface ResumeParseResult {
   }>;
   skills: string[];
   certifications: string[];
+  total_years_of_experience?: string;
+  notice_period?: string;
+  visa_status?: string;
   full_text?: string;
 }
 
