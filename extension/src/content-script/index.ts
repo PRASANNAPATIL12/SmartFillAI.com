@@ -33,7 +33,7 @@ import {
   showSuccessBanner,
   hideBanner,
 } from './overlay-banner';
-import { showGhost, removeGhost, repositionAllGhosts } from './ghost-text';
+import { showGhost, removeGhost, repositionAllGhosts, sweepDisconnectedGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions } from './combobox';
 import { resolveCountry, stripCountryCode } from './country-aliases';
 import { validateLearnedValue } from './value-validation';
@@ -1821,6 +1821,10 @@ if (document.readyState === 'loading') {
 
 // Debounced re-scan on DOM mutations (SPA route changes render new forms)
 const observer = new MutationObserver(() => {
+  // Immediately remove ghost text for any field that was just removed from the DOM
+  // (e.g. a login modal closed without the user filling it).  No layout reads,
+  // so this is cheap enough to run on every mutation.
+  sweepDisconnectedGhosts();
   clearTimeout(scanTimer);
   // scanFields is async; the returned Promise is intentionally ignored here
   scanTimer = setTimeout(() => { scanFields().catch(() => {}); }, 300);

@@ -130,6 +130,19 @@ export function repositionAllGhosts(): void {
   }
 }
 
+/**
+ * Lightweight sweep — removes ghosts whose target field is no longer in the DOM.
+ * Called from the MutationObserver on any DOM change (no layout reads, no reposition).
+ * This is what removes ghost text when a modal/popup closes without filling.
+ */
+export function sweepDisconnectedGhosts(): void {
+  for (const entry of entries) {
+    if (!entry.target.isConnected || !entry.ghost.isConnected) {
+      cleanupEntry(entry);
+    }
+  }
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 function px(s: string): number {
