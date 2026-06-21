@@ -8,7 +8,6 @@
     "scripting",
     "storage",
     "unlimitedStorage",
-    "identity",
     "alarms"
   ],
   "host_permissions": [
