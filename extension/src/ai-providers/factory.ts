@@ -16,11 +16,9 @@ export class AIProviderFactory {
   private static _instance: IAIProvider | null = null;
 
   static async getProvider(): Promise<IAIProvider> {
-    if (this._instance) {
-      const alive = await this._instance.isAvailable().catch(() => false);
-      if (alive) return this._instance;
-      // Primary down — fall through to rebuild with fallback
-    }
+    // Return cached instance without pinging — the ping wastes a quota request
+    // on every call. If an actual request fails, the caller's catch handles it.
+    if (this._instance) return this._instance;
 
     const config = await getProviderConfig();
 
