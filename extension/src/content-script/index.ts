@@ -803,15 +803,23 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     if (!document.contains(el)) continue;
     if (el.dataset.dittoFilled === 'true') continue;
 
+    const ariaRole2 = el.getAttribute('role');
     const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
-      || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
-    const isChoiceGroup = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
+      || el instanceof HTMLButtonElement || ariaRole2 === 'button'
+      || ariaRole2 === 'combobox';
+    const isChoiceGroup = (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+      || ariaRole2 === 'radio' || ariaRole2 === 'checkbox' || ariaRole2 === 'switch';
     const isText = (el instanceof HTMLInputElement
                      && /^(text|email|tel|url|search|number|)$/.test(el.type))
-                 || el instanceof HTMLTextAreaElement;
+                 || el instanceof HTMLTextAreaElement
+                 || el.isContentEditable || ariaRole2 === 'textbox' || ariaRole2 === 'searchbox';
     if (!isDropdown && !isText && !isChoiceGroup) continue;
-    // Don't clobber a text field the user already typed into.
-    if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
+    if (isText) {
+      const curVal = (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+        ? ((el as HTMLInputElement).value ?? '').trim()
+        : (el.innerText ?? '').trim();
+      if (curVal !== '') continue;
+    }
 
     const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
                || state.sig.name  || state.sig.id || '';
@@ -857,15 +865,23 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     if (!document.contains(el)) continue;
     if (el.dataset.dittoFilled === 'true') continue;
 
+    const ariaRole3 = el.getAttribute('role');
     const isDropdown = el instanceof HTMLSelectElement || isCombobox(el)
-      || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button';
+      || el instanceof HTMLButtonElement || ariaRole3 === 'button'
+      || ariaRole3 === 'combobox';
     const isText = (el instanceof HTMLInputElement
                      && /^(text|email|tel|url|search|number|)$/.test(el.type))
-                 || el instanceof HTMLTextAreaElement;
-    const isChoiceGroup = el instanceof HTMLInputElement
-      && (el.type === 'radio' || el.type === 'checkbox');
+                 || el instanceof HTMLTextAreaElement
+                 || el.isContentEditable || ariaRole3 === 'textbox' || ariaRole3 === 'searchbox';
+    const isChoiceGroup = (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+      || ariaRole3 === 'radio' || ariaRole3 === 'checkbox' || ariaRole3 === 'switch';
     if (!isDropdown && !isText && !isChoiceGroup) continue;
-    if (isText && ((el as HTMLInputElement).value ?? '').trim() !== '') continue;
+    if (isText) {
+      const curVal = (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
+        ? ((el as HTMLInputElement).value ?? '').trim()
+        : (el.innerText ?? '').trim();
+      if (curVal !== '') continue;
+    }
 
     const label = state.sig.label || state.sig.ariaLabel || state.sig.placeholder
                || state.sig.name  || state.sig.id || '';
@@ -1106,7 +1122,7 @@ function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: Match
   // For comboboxes, input.value is empty (react-select manages it internally);
   // read the display label from the DOM instead so the guard fires correctly.
   const capturePreFocus = (): string =>
-    isCombobox(el) ? getComboboxDisplayValue(el) : ((el as HTMLInputElement).value ?? '');
+    resolveHandler(el).capture(el) ?? '';
   el.dataset.dittoPreFocusValue = capturePreFocus();
   el.addEventListener('focus', () => {
     el.dataset.dittoPreFocusValue = capturePreFocus();
@@ -1167,11 +1183,13 @@ function tryLearnField(el: HTMLElement): void {
   // STEP 6.5 — Use the full isCombobox() detection from combobox.ts so we
   // don't skip combobox-like elements when focus stays on them after the
   // user picks an option (the most common pattern in react-select / Greenhouse).
-  const comboLike = isCombobox(el);
+  const comboLike = isCombobox(el) || el.getAttribute('role') === 'combobox';
   // Radio/checkbox groups have no "mid-typing" state, so learning while one is
   // focused is safe (bypass the guard, like comboboxes). Plain text fields keep
   // the guard.
-  const isChoice = el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox');
+  const isChoice = (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+    || el.getAttribute('role') === 'radio' || el.getAttribute('role') === 'checkbox'
+    || el.getAttribute('role') === 'switch';
   if (document.activeElement === el && !comboLike && !isChoice) return;
 
   const state = matchMap.get(el);
@@ -1337,7 +1355,10 @@ function runLearnSweep(): void {
       // and radio/checkbox groups — none reliably fire blur/change on the
       // representative element when the user toggles another member.
       if (isCombobox(el) || el instanceof HTMLButtonElement || el.getAttribute('role') === 'button'
-          || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))) {
+          || el.getAttribute('role') === 'combobox'
+          || (el instanceof HTMLInputElement && (el.type === 'radio' || el.type === 'checkbox'))
+          || el.getAttribute('role') === 'radio' || el.getAttribute('role') === 'checkbox'
+          || el.getAttribute('role') === 'switch') {
         tryLearnField(el);
       }
     }

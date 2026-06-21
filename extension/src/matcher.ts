@@ -259,7 +259,9 @@ const ESSAY_LABEL_PATTERNS = [
 ];
 
 function isEssay(sig: FieldSignature): boolean {
-  if (sig.inputType !== 'textarea') return false;
+  const isMultiline = sig.inputType === 'textarea'
+    || (sig.inputType === 'ax-textbox' && sig.element?.getAttribute('aria-multiline') === 'true');
+  if (!isMultiline) return false;
   // Short textareas (e.g., maxLength < 100) are probably not essays
   if (sig.maxLength !== null && sig.maxLength < 100) return false;
   const combined = combine(sig);
@@ -465,7 +467,8 @@ function ruleMatch(sig: FieldSignature): RuleMatch | null {
 
   for (const rule of RULES) {
     // requiresTextarea guard
-    if (rule.requiresTextarea && sig.inputType !== 'textarea') continue;
+    if (rule.requiresTextarea && sig.inputType !== 'textarea'
+        && !(sig.inputType === 'ax-textbox' && sig.element?.getAttribute('aria-multiline') === 'true')) continue;
 
     let matched = false;
 

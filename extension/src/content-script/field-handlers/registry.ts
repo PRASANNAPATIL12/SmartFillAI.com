@@ -10,22 +10,27 @@
  * precedence: button-dropdown → select → combobox → text (fallback last).
  */
 import type { FieldHandler } from './types';
+import { ariaComboboxHandler } from './aria-combobox-handler';
 import { buttonDropdownHandler } from './button-dropdown-handler';
 import { selectHandler } from './select-handler';
 import { comboboxHandler } from './combobox-handler';
+import { ariaChoiceHandler } from './aria-choice-handler';
 import { radioGroupHandler } from './radio-group-handler';
 import { checkboxGroupHandler } from './checkbox-group-handler';
 import { dateHandler } from './date-handler';
+import { contenteditableHandler } from './contenteditable-handler';
 import { textHandler } from './text-handler';
 
 const HANDLERS: FieldHandler[] = [
+  ariaComboboxHandler,
   buttonDropdownHandler,
   selectHandler,
   comboboxHandler,
+  ariaChoiceHandler,
   radioGroupHandler,
   checkboxGroupHandler,
   dateHandler,
-  // ← new field-kind handlers go here, before the text fallback
+  contenteditableHandler,
   textHandler,
 ];
 

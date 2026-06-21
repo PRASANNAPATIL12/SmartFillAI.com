@@ -1,5 +1,23 @@
 import type { FieldSignature } from '@shared/types';
 
+// ── Accessibility helpers ────────────────────────────────────────────────────
+
+const AX_SUPPORTED = typeof HTMLElement !== 'undefined' && 'computedRole' in HTMLElement.prototype;
+
+function isNativeFormElement(el: HTMLElement): boolean {
+  return el instanceof HTMLInputElement
+    || el instanceof HTMLTextAreaElement
+    || el instanceof HTMLSelectElement;
+}
+
+function axResolveName(el: HTMLElement): string {
+  if (AX_SUPPORTED) {
+    const computed = (el as any).computedName;
+    if (typeof computed === 'string' && computed.trim()) return computed.trim();
+  }
+  return '';
+}
+
 /**
  * Extracts a FieldSignature from a form element.
  * Handles all the ways a label can be associated with an input in the wild:
@@ -32,6 +50,8 @@ export function extractSignature(
     accept: el.tagName === 'INPUT' ? (el as HTMLInputElement).accept ?? '' : '',
     options: gatherDropdownOptions(el),
     element: el,
+    axRole: AX_SUPPORTED ? ((el as any).computedRole || undefined) : undefined,
+    axName: AX_SUPPORTED ? ((el as any).computedName || undefined) : undefined,
   };
 }
 
@@ -52,7 +72,7 @@ export function extractSignature(
  * Returns `undefined` when no options are discoverable (the listbox lazy-
  * mounts on click). The fill path will re-read at click-time for those.
  */
-function gatherDropdownOptions(el: HTMLElement): string[] | undefined {
+export function gatherDropdownOptions(el: HTMLElement): string[] | undefined {
   // 1. Native <select>
   if (el instanceof HTMLSelectElement) {
     const opts = Array.from(el.options)
@@ -101,38 +121,245 @@ function readListboxOptions(lb: Element): string[] {
     .filter(t => t.length > 0 && t.length < 200);
 }
 
+// ── ARIA widget discovery ────────────────────────────────────────────────────
+
+const ARIA_INDIVIDUAL_SELECTOR = [
+  '[role="combobox"]',
+  '[role="textbox"]',
+  '[role="searchbox"]',
+  '[role="spinbutton"]',
+  '[contenteditable="true"]',
+].join(',');
+
+const ARIA_GROUP_ROLES = new Set(['radio', 'radiogroup', 'checkbox', 'switch']);
+
+function axInputType(role: string, el: HTMLElement): string {
+  if (role === 'combobox') return 'ax-combobox';
+  if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') return 'ax-textbox';
+  if (el.isContentEditable) return 'ax-textbox';
+  return 'ax-textbox';
+}
+
+function extractAriaSignature(el: HTMLElement): FieldSignature {
+  const role = AX_SUPPORTED ? ((el as any).computedRole || el.getAttribute('role') || '') : (el.getAttribute('role') || '');
+  const name = axResolveName(el);
+  return {
+    label: name || resolveLabel(el),
+    placeholder: el.getAttribute('placeholder') ?? '',
+    name: el.getAttribute('name') ?? '',
+    id: el.getAttribute('id') ?? '',
+    ariaLabel: el.getAttribute('aria-label') ?? '',
+    autocomplete: el.getAttribute('autocomplete') ?? '',
+    inputType: axInputType(role, el),
+    maxLength: null,
+    surroundingText: resolveSurroundingText(el),
+    options: gatherDropdownOptions(el),
+    element: el,
+    axRole: role || undefined,
+    axName: name || undefined,
+  };
+}
+
+function extractAriaRadioGroups(root: Document | Element, seen: Set<HTMLElement>): FieldSignature[] {
+  const sigs: FieldSignature[] = [];
+
+  // Strategy 1: Explicit [role="radiogroup"] containers
+  for (const group of Array.from(root.querySelectorAll<HTMLElement>('[role="radiogroup"]'))) {
+    if (!isVisible(group)) continue;
+    const radios = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'))
+      .filter(r => isVisible(r) && !seen.has(r) && !isNativeFormElement(r));
+    if (radios.length === 0) continue;
+
+    radios.forEach(r => seen.add(r));
+    seen.add(group);
+
+    const name = axResolveName(group) || resolveLabel(group);
+    const options = radios.map(r => {
+      const rn = axResolveName(r);
+      return rn || (r.textContent ?? '').replace(/\s+/g, ' ').trim();
+    }).filter(Boolean);
+
+    sigs.push({
+      label: name || 'Choice',
+      placeholder: '',
+      name: group.getAttribute('name') ?? '',
+      id: group.getAttribute('id') ?? '',
+      ariaLabel: group.getAttribute('aria-label') ?? '',
+      autocomplete: '',
+      inputType: 'ax-radio-group',
+      maxLength: null,
+      surroundingText: resolveSurroundingText(group),
+      options,
+      element: radios[0],
+      axRole: 'radiogroup',
+      axName: name || undefined,
+    });
+  }
+
+  // Strategy 2: Orphan [role="radio"] not inside a radiogroup
+  const orphans = Array.from(root.querySelectorAll<HTMLElement>('[role="radio"]'))
+    .filter(r => isVisible(r) && !seen.has(r) && !isNativeFormElement(r) && !r.closest('[role="radiogroup"]'));
+
+  if (orphans.length > 0) {
+    const groups = new Map<HTMLElement, HTMLElement[]>();
+    for (const r of orphans) {
+      const container = (r.closest('fieldset') ?? r.closest('[role="group"]') ?? r.parentElement) as HTMLElement;
+      if (!container) continue;
+      const arr = groups.get(container) ?? [];
+      arr.push(r);
+      groups.set(container, arr);
+    }
+
+    for (const [container, radios] of groups.entries()) {
+      if (radios.length === 0) continue;
+      radios.forEach(r => seen.add(r));
+      const name = axResolveName(container) || resolveLabel(container);
+      const options = radios.map(r => {
+        const rn = axResolveName(r);
+        return rn || (r.textContent ?? '').replace(/\s+/g, ' ').trim();
+      }).filter(Boolean);
+
+      sigs.push({
+        label: name || 'Choice',
+        placeholder: '',
+        name: '',
+        id: container.getAttribute('id') ?? '',
+        ariaLabel: container.getAttribute('aria-label') ?? '',
+        autocomplete: '',
+        inputType: 'ax-radio-group',
+        maxLength: null,
+        surroundingText: resolveSurroundingText(container),
+        options,
+        element: radios[0],
+        axRole: 'radiogroup',
+        axName: name || undefined,
+      });
+    }
+  }
+
+  return sigs;
+}
+
+function extractAriaCheckboxGroups(root: Document | Element, seen: Set<HTMLElement>): FieldSignature[] {
+  const sigs: FieldSignature[] = [];
+  const allBoxes = Array.from(root.querySelectorAll<HTMLElement>('[role="checkbox"], [role="switch"]'))
+    .filter(b => isVisible(b) && !seen.has(b) && !isNativeFormElement(b));
+
+  if (allBoxes.length === 0) return sigs;
+
+  const groups = new Map<HTMLElement, HTMLElement[]>();
+  for (const box of allBoxes) {
+    const container = (box.closest('[role="group"]') ?? box.closest('fieldset')) as HTMLElement | null;
+    const key = container ?? box;
+    const arr = groups.get(key) ?? [];
+    arr.push(box);
+    groups.set(key, arr);
+  }
+
+  for (const [container, members] of groups.entries()) {
+    if (members.length === 0) continue;
+    members.forEach(m => seen.add(m));
+    const rep = members[0];
+    const role = rep.getAttribute('role');
+
+    if (members.length === 1 && role === 'switch') {
+      const name = axResolveName(rep) || resolveLabel(rep);
+      sigs.push({
+        label: name || (rep.textContent ?? '').replace(/\s+/g, ' ').trim() || 'Toggle',
+        placeholder: '',
+        name: rep.getAttribute('name') ?? '',
+        id: rep.getAttribute('id') ?? '',
+        ariaLabel: rep.getAttribute('aria-label') ?? '',
+        autocomplete: '',
+        inputType: 'ax-switch',
+        maxLength: null,
+        surroundingText: resolveSurroundingText(rep),
+        options: [],
+        element: rep,
+        axRole: 'switch',
+        axName: name || undefined,
+      });
+    } else {
+      const groupContainer = container !== rep ? container : null;
+      const target = groupContainer ?? rep;
+      const name = axResolveName(target) || resolveLabel(target);
+      const options = members.map(m => {
+        const mn = axResolveName(m);
+        return mn || (m.textContent ?? '').replace(/\s+/g, ' ').trim();
+      }).filter(Boolean);
+
+      sigs.push({
+        label: name || 'Choice',
+        placeholder: '',
+        name: '',
+        id: target.getAttribute('id') ?? '',
+        ariaLabel: target.getAttribute('aria-label') ?? '',
+        autocomplete: '',
+        inputType: 'ax-checkbox-group',
+        maxLength: null,
+        surroundingText: resolveSurroundingText(target),
+        options,
+        element: rep,
+        axRole: 'checkbox',
+        axName: name || undefined,
+      });
+    }
+  }
+
+  return sigs;
+}
+
+function extractAriaWidgets(root: Document | Element, seen: Set<HTMLElement>): FieldSignature[] {
+  const sigs: FieldSignature[] = [];
+
+  // Phase 1: Individual ARIA widgets (combobox, textbox, searchbox, spinbutton, contenteditable)
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(ARIA_INDIVIDUAL_SELECTOR))) {
+    if (!isVisible(el) || seen.has(el)) continue;
+    if (isNativeFormElement(el)) continue;
+    const role = el.getAttribute('role');
+    if (role === 'none' || role === 'presentation') continue;
+    if (role && ARIA_GROUP_ROLES.has(role)) continue;
+    seen.add(el);
+    sigs.push(extractAriaSignature(el));
+  }
+
+  // Phase 2: ARIA radio groups ([role="radiogroup"] + orphan [role="radio"])
+  sigs.push(...extractAriaRadioGroups(root, seen));
+
+  // Phase 3: ARIA checkbox / switch groups
+  sigs.push(...extractAriaCheckboxGroups(root, seen));
+
+  return sigs;
+}
+
 /**
  * Scan the page for all visible, interactive form fields.
  * Returns one FieldSignature per field, skipping fields inside iframes
  * (we can't access cross-origin iframes).
  */
 export function extractAllFields(root: Document | Element = document): FieldSignature[] {
+  const seen = new Set<HTMLElement>();
+  const sigs: FieldSignature[] = [];
+
+  // AX pass: discover custom ARIA widgets that native selectors miss.
+  // Runs FIRST so AX-discovered elements populate `seen` and the native pass skips them.
+  sigs.push(...extractAriaWidgets(root, seen));
+
   const selector = 'input:not([type="hidden"]):not([type="submit"]):not([type="button"])'
     + ':not([type="reset"]):not([type="image"]):not([type="radio"]):not([type="checkbox"]),'
     + 'textarea,'
     + 'select';
-  // Radios and checkboxes are excluded above; both are re-added as grouped
-  // fields by extractRadioGroups() / extractCheckboxGroups() — ONE logical
-  // field per group (by form+name OR shared container) instead of N.
 
   const elements = Array.from(root.querySelectorAll<
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
   >(selector));
 
-  const seen = new Set<HTMLElement>();
-  const sigs: FieldSignature[] = [];
   for (const el of elements) {
-    if (!isVisible(el)) continue;
+    if (!isVisible(el) || seen.has(el)) continue;
     seen.add(el);
     sigs.push(extractSignature(el));
   }
 
-  // Additional discovery passes for non-standard widgets that don't render as
-  // a visible <input>/<select>/<textarea>:
-  //   • extractButtonDropdowns — phone country-code button pickers
-  //   • extractFileInputs       — input[type=file] that's display:none but
-  //                                 reachable through a styled label/button
-  //   • extractDropzones        — drag-and-drop <div>s with no inner input
   return [
     ...sigs,
     ...extractButtonDropdowns(root),
@@ -298,7 +525,7 @@ function checkboxGroupQuestion(members: HTMLInputElement[]): string {
   for (let depth = 0; depth < 6 && cur; depth++, cur = cur.parentElement) {
     for (let sib = cur.previousElementSibling; sib; sib = sib.previousElementSibling) {
       const text = (sib.textContent ?? '').replace(/\s+/g, ' ').trim();
-      if (text.length < 10 || text.length > 240) continue;
+      if (text.length < 4 || text.length > 400) continue;
       if (optionLabels.has(text.toLowerCase())) continue;
       // Prefer label/heading-ish elements but accept any element with a
       // plausible question — Greenhouse uses <label> as the question heading.
@@ -341,6 +568,25 @@ function radioGroupQuestion(members: HTMLInputElement[]): string {
   }
   const ariaLabel = groupEl?.getAttribute('aria-label')?.trim();
   if (ariaLabel) return ariaLabel;
+
+  // Walk up ancestor containers looking for a preceding label/sibling that
+  // introduces this radio group (e.g. Lever's question div before the choice div).
+  const optionTexts = new Set(members.map(m => (m.value || '').toLowerCase()));
+  let ancestor: HTMLElement | null = rep.parentElement;
+  for (let depth = 0; depth < 5 && ancestor; depth++) {
+    if (['FORM', 'BODY', 'HTML'].includes(ancestor.tagName)) break;
+    for (let sib: Element | null = ancestor.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      const clone = sib.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll?.('input, textarea, select').forEach((n: Element) => n.remove());
+      const text = (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length < 4 || text.length > 400) continue;
+      if (optionTexts.has(text.toLowerCase())) continue;
+      if (/^(yes|no|true|false|on|off)$/i.test(text)) continue;
+      return text;
+    }
+    ancestor = ancestor.parentElement;
+  }
+
   return '';
 }
 
@@ -632,6 +878,14 @@ function extractDropzones(
 // ── Label resolution ──────────────────────────────────────────────────────────
 
 function resolveLabel(el: HTMLElement): string {
+  // 0. Browser-computed accessible name (Chrome 105+) — full WAI-ARIA algorithm
+  if (AX_SUPPORTED) {
+    const computed = (el as any).computedName;
+    if (typeof computed === 'string' && computed.trim()) {
+      return computed.trim();
+    }
+  }
+
   // 1. aria-labelledby → points to one or more element IDs
   const labelledBy = el.getAttribute('aria-labelledby');
   if (labelledBy) {
@@ -670,6 +924,27 @@ function resolveLabel(el: HTMLElement): string {
   const prevText = el.previousElementSibling?.textContent?.trim();
   if (prevText) return prevText;
 
+  // 7. Walk up ancestor containers looking for a preceding label/sibling.
+  // Catches platforms (Lever, iCIMS, SmartRecruiters) where the question text
+  // is in a parent's sibling element rather than directly before the input.
+  {
+    let ancestor: HTMLElement | null = el.parentElement;
+    for (let depth = 0; depth < 4 && ancestor; depth++) {
+      if (['FORM', 'BODY', 'HTML'].includes(ancestor.tagName)) break;
+      for (let sib: Element | null = ancestor.previousElementSibling; sib; sib = sib.previousElementSibling) {
+        const clone = sib.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll?.('input, textarea, select, button').forEach((n: Element) => n.remove());
+        const text = (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length < 4 || text.length > 400) continue;
+        // Exclude generic placeholder-like text and single option labels
+        if (/^(type your|enter your|write here|your answer|required|optional)$/i.test(text)) continue;
+        if (/^(yes|no|true|false|on|off)$/i.test(text)) continue;
+        return text;
+      }
+      ancestor = ancestor.parentElement;
+    }
+  }
+
   return '';
 }
 
@@ -691,16 +966,22 @@ function resolveSurroundingText(el: HTMLElement): string {
   const next = el.nextElementSibling?.textContent?.trim();
   if (next) parts.push(next);
 
-  // Parent div/span/p (but not the whole form)
-  const parent = el.parentElement;
-  if (parent && !['FORM', 'BODY', 'HTML'].includes(parent.tagName)) {
-    const parentClone = parent.cloneNode(true) as HTMLElement;
-    parentClone.querySelectorAll('input, textarea, select').forEach(n => n.remove());
-    const parentText = parentClone.textContent?.trim() ?? '';
-    if (parentText) parts.push(parentText);
+  // Walk up 3 ancestor levels (not just 1) to capture question containers.
+  // Lever/iCIMS/SmartRecruiters wrap inputs in nested divs so the question
+  // label is 2-3 levels above the input element.
+  let node: HTMLElement | null = el.parentElement;
+  for (let depth = 0; depth < 3 && node; depth++) {
+    if (['FORM', 'BODY', 'HTML'].includes(node.tagName)) break;
+    const clone = node.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('input, textarea, select').forEach(n => n.remove());
+    const text = (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (text && !parts.some(p => p.includes(text) || text.includes(p))) {
+      parts.push(text.slice(0, 250));
+    }
+    node = node.parentElement;
   }
 
-  return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+  return parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 500);
 }
 
 function isVisible(el: HTMLElement): boolean {

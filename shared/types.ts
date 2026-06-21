@@ -107,6 +107,11 @@ export interface FieldSignature {
 
   /** DOM element reference (not serializable, only in content script) */
   element?: HTMLElement;
+
+  /** Browser-computed ARIA role (Chrome 105+). Undefined if unavailable. */
+  axRole?: string;
+  /** Browser-computed accessible name (Chrome 105+). Undefined if unavailable. */
+  axName?: string;
 }
 
 export type MatchStatus = 'MATCHED' | 'ESSAY' | 'FILE_UPLOAD' | 'UNKNOWN' | 'SKIP';

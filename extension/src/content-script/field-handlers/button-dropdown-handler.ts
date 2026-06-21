@@ -6,13 +6,20 @@
 import type { FieldHandler, FillContext } from './types';
 import { fillButtonDropdown } from '../combobox';
 
+const ARIA_WIDGET_ROLES = new Set([
+  'combobox', 'listbox', 'textbox', 'searchbox',
+  'radio', 'radiogroup', 'checkbox', 'switch', 'spinbutton',
+]);
+
 export const buttonDropdownHandler: FieldHandler = {
   kind: 'button-dropdown',
 
   match(el: HTMLElement): boolean {
-    return el instanceof HTMLButtonElement
-      || el.getAttribute('role') === 'button'
-      || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT');
+    if (el instanceof HTMLButtonElement) return true;
+    if (el.getAttribute('role') === 'button') return true;
+    const role = el.getAttribute('role');
+    if (role && ARIA_WIDGET_ROLES.has(role)) return false;
+    return el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT';
   },
 
   async fill(el: HTMLElement, value: string, ctx: FillContext): Promise<boolean> {
