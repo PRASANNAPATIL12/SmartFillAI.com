@@ -2,44 +2,49 @@
  * MiniLM-L6-v2 sentence embedder.
  * Runs in the background service worker — no DOM access needed.
  *
- * Configuration for service worker compatibility:
+ * The @xenova/transformers library is loaded via dynamic import() so it
+ * forms a separate Rollup chunk that is fetched only when the first
+ * computeEmbedding() call is made, keeping the service-worker critical path
+ * fast. The pipeline instance is then cached for the SW's lifetime.
+ *
+ * Configuration (applied on first load, before pipeline init):
  *   - numThreads=1 / proxy=false: prevents spawning web workers
  *     (service workers cannot create workers)
  *   - useBrowserCache=true: caches model files via Cache API
- *     (avoids re-downloading 22 MB model on every SW wake)
+ *     (avoids re-downloading the 22 MB model on every SW wake)
  */
-
-import { pipeline, env } from '@xenova/transformers';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(env as any).backends.onnx.wasm.numThreads = 1;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(env as any).backends.onnx.wasm.proxy = false;
-env.useBrowserCache = true;
 
 const MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Pipe = (text: string, opts: object) => Promise<{ data: Float32Array }>;
 
-let _pipe: Pipe | null = null;
+let _pipe:    Pipe | null          = null;
 let _loading: Promise<Pipe> | null = null;
 
+async function loadEmbedder(): Promise<Pipe> {
+  try {
+    // Dynamic import defers the 828 KB transformers bundle until first use.
+    const { pipeline, env } = await import('@xenova/transformers');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (env as any).backends.onnx.wasm.numThreads = 1;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (env as any).backends.onnx.wasm.proxy = false;
+    env.useBrowserCache = true;
+    const p = await pipeline('feature-extraction', MODEL_ID);
+    _pipe    = p as unknown as Pipe;
+    _loading = null;
+    return _pipe;
+  } catch (err) {
+    _loading = null;
+    throw err;
+  }
+}
+
 async function getEmbedder(): Promise<Pipe> {
-  if (_pipe) return _pipe;
+  if (_pipe)    return _pipe;
   if (_loading) return _loading;
-
-  _loading = pipeline('feature-extraction', MODEL_ID)
-    .then(p => {
-      _pipe = p as unknown as Pipe;
-      _loading = null;
-      return _pipe;
-    })
-    .catch(err => {
-      _loading = null;
-      throw err;
-    });
-
+  _loading = loadEmbedder();
   return _loading;
 }
 
@@ -49,7 +54,7 @@ async function getEmbedder(): Promise<Pipe> {
  */
 export async function computeEmbedding(text: string): Promise<number[]> {
   const embedder = await getEmbedder();
-  const output = await embedder(text, { pooling: 'mean', normalize: true });
+  const output   = await embedder(text, { pooling: 'mean', normalize: true });
   return Array.from(output.data);
 }
 
