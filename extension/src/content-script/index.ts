@@ -799,7 +799,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   // string set directly. This is the learn-and-reuse path for fields that
   // aren't profile attributes. No AI involved.
   for (const [el, state] of matchMap) {
-    if (state.result.status !== 'UNKNOWN') continue;
+    if (state.result.status === 'SKIP' || state.result.status === 'FILE_UPLOAD' || state.result.status === 'ESSAY') continue;
     if (!document.contains(el)) continue;
     if (el.dataset.dittoFilled === 'true') continue;
 
@@ -850,9 +850,10 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   const companyName = detectCompany().name;
   let llmCalls = 0;
   const LLM_CALL_CAP = 10;
+  sfaLog('LLM tier: starting, company =', companyName || '(none)');
   for (const [el, state] of matchMap) {
     if (llmCalls >= LLM_CALL_CAP) break;
-    if (state.result.status !== 'UNKNOWN') continue;
+    if (state.result.status === 'SKIP' || state.result.status === 'FILE_UPLOAD' || state.result.status === 'ESSAY') continue;
     if (!document.contains(el)) continue;
     if (el.dataset.dittoFilled === 'true') continue;
 
@@ -875,10 +876,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     const kind = classifyAnswerKind(label, el);
     const seed = (kind === 'narrative' && companyName) ? await getSeedAnswer(label) : null;
 
-    // Text fields only go to the LLM if they're actually QUESTIONS, OR they're
-    // narrative fields we have a seed to adapt. A plain unmatched attribute text
-    // field stays blank (the user fills it and we learn it), not an AI guess.
-    if (isText && !isQuestionLikeLabel(label) && !(kind === 'narrative' && seed)) continue;
+    // Text fields only go to the LLM if they're actually QUESTIONS, already
+    // MATCHED (matcher identified it as answerable), OR narrative with a seed.
+    if (isText && state.result.status !== 'MATCHED' && !isQuestionLikeLabel(label) && !(kind === 'narrative' && seed)) continue;
 
     // Options for the LLM (so it returns a valid choice verbatim).
     let options: string[] = [];
@@ -890,17 +890,25 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
 
     llmCalls++;
+    sfaLog('LLM tier: asking', label, '| status:', state.result.status,
+           '| options:', options.length ? options : '(free text)', '| kind:', kind);
     let resp: { answer: string | null; confidence: number } | null = null;
     try {
       resp = await sendToBackground<{ answer: string | null; confidence: number }>(
         'ANSWER_FIELD', { question: label, options, company: companyName || undefined, seedAnswer: seed || undefined }
       );
-    } catch {
+    } catch (err) {
+      sfaLog('LLM tier: ANSWER_FIELD error for', label, '|', err);
       resp = null;
     }
-    if (!resp?.answer) continue;
+    if (!resp?.answer) {
+      sfaLog('LLM tier: no answer for', label);
+      continue;
+    }
 
+    sfaLog('LLM tier: answered', label, '→', resp.answer, '(confidence:', resp.confidence, ')');
     const ok = await fillElement(el, resp.answer);
+    sfaLog('LLM tier: fill', ok ? 'OK' : 'FAILED', label);
     if (ok) {
       filled++;
       // Cache factual answers so the next visit is a free qa-cache hit. Do NOT
@@ -912,6 +920,7 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       }
     }
   }
+  sfaLog('LLM tier: done, calls made:', llmCalls);
 
   // File-fill loop — attach documents to file upload fields and dropzones.
   // `el` may be HTMLInputElement (visible OR hidden native input) or a

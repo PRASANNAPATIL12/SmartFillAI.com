@@ -13,7 +13,8 @@ import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resu
 import { generateEssay } from './essay-generator';
 import { classifyFields, type FieldClassifySpec } from './llm-classifier';
 import { answerField } from './answer-field';
-import { clearLlmAnswers, normalizeQuestion, getRememberedAnswer } from '../content-script/qa-cache';
+import { generateResumeQA } from './resume-qa-generator';
+import { clearLlmAnswers, normalizeQuestion, getRememberedAnswer, rememberAnswer } from '../content-script/qa-cache';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -60,6 +61,23 @@ import {
   saveQaEmbedding,
   getAllQaEmbeddings,
 } from '@/storage/idb';
+
+// ── Resume Q&A pre-generation ────────────────────────────────────────────────
+
+async function generateAndStoreResumeQA(resumeText: string): Promise<void> {
+  const entries = await getAllEntries();
+  const pairs = await generateResumeQA(resumeText, entries);
+  for (const { question, answer } of pairs) {
+    await rememberAnswer(question, answer, 'llm');
+    const nq = normalizeQuestion(question);
+    if (nq.length >= 6) {
+      try {
+        const vec = await computeEmbedding(nq);
+        await saveQaEmbedding(nq, Array.from(vec));
+      } catch { /* embedding model not ready */ }
+    }
+  }
+}
 
 // ── Alarm names ───────────────────────────────────────────────────────────────
 
@@ -639,7 +657,13 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
     await saveDocument(doc);
     refreshDocumentsMetaCache().catch(() => {});
-    if (docType === 'resume') clearLlmAnswers().catch(() => {});
+    if (docType === 'resume') {
+      clearLlmAnswers().catch(() => {});
+      if (extractedText) {
+        generateAndStoreResumeQA(extractedText).catch(err =>
+          console.warn('[SmartFillAI] resume QA generation error', err));
+      }
+    }
 
     const { fileData: _, ...meta } = doc;
     return meta;
@@ -701,7 +725,14 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       updatedAt: Date.now(),
     });
     refreshDocumentsMetaCache().catch(() => {});
-    if (existing.docType === 'resume') clearLlmAnswers().catch(() => {});
+    if (existing.docType === 'resume') {
+      clearLlmAnswers().catch(() => {});
+      const newText = extractedText ?? existing.extractedText;
+      if (newText) {
+        generateAndStoreResumeQA(newText).catch(err =>
+          console.warn('[SmartFillAI] resume QA generation error', err));
+      }
+    }
 
     return getDocumentMeta(id);
   },

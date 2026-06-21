@@ -136,4 +136,5 @@ export type AIOperation =
   | 'field_classify'
   | 'answer_field'
   | 'key_suggest'
-  | 'company_research';
+  | 'company_research'
+  | 'resume_qa_gen';
