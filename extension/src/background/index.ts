@@ -117,8 +117,13 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 });
 
 // Recreate alarms after a browser restart — onInstalled does not fire then.
+// Also pull from cloud on startup so data from other browsers is visible
+// immediately, without waiting up to 5 minutes for the first sync alarm.
 chrome.runtime.onStartup.addListener(() => {
   ensureAlarms().catch(() => {});
+  getSettings().then(s => {
+    if (s.cloudSync) pullFromCloud().catch(() => {});
+  }).catch(() => {});
 });
 
 // ── Alarm handler ─────────────────────────────────────────────────────────────
@@ -543,7 +548,10 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   SIGN_IN: async (payload) => {
     const { email, password } = payload as { email: string; password: string };
     const session = await signIn(email, password);
-    pullFromCloud().catch(() => {});
+    // Push any locally-queued entries first (data entered before sign-in),
+    // then pull the server's canonical state. Fire-and-forget so the popup
+    // is not blocked — both operations are idempotent on failure.
+    pushSyncQueue().then(() => pullFromCloud()).catch(() => {});
     return { userId: session.userId, email: session.email };
   },
 

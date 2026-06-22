@@ -3,7 +3,7 @@ import { STORAGE_KEYS } from '@shared/types';
 
 export const DEFAULT_SETTINGS: UserSettings = {
   autoSave: true,
-  cloudSync: false,
+  cloudSync: true,
   syncFrequency: '5min',
   showGhostText: true,
   blockSensitiveDomains: true,

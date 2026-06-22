@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import type { DocumentMeta, ProfileEntry } from '@shared/types';
+import type { DocumentMeta, ProfileEntry, UserSettings } from '@shared/types';
 import { sendToBackground, sendToActiveTab } from '../utils/messages';
 import { getAllQAEntries } from '@/content-script/qa-cache';
 
@@ -30,6 +30,7 @@ export default function HomeScreen({
   const [profileLoaded,  setProfileLoaded]  = useState(false);
   const [docsLoaded,     setDocsLoaded]     = useState(false);
   const [answersLoaded,  setAnswersLoaded]  = useState(false);
+  const [cloudSync,      setCloudSync]      = useState(true);
   const [fillState,      setFillState]      = useState<FillState>('idle');
   const [fillResult,     setFillResult]     = useState<{ filled: number; skipped: number } | null>(null);
   const [fillError,      setFillError]      = useState('');
@@ -58,6 +59,8 @@ export default function HomeScreen({
     getAllQAEntries()
       .then(qa => { setAnswerCount(qa.length); setAnswersLoaded(true); })
       .catch(() => {                            setAnswersLoaded(true); });
+    sendToBackground<UserSettings>('GET_SETTINGS')
+      .then(s => setCloudSync(s.cloudSync)).catch(() => {});
     sendToActiveTab<{ total: number; matched: number }>('GET_FIELD_STATS')
       .then(stats => setFieldStats(stats)).catch(() => setFieldStats(null));
   }, []);
@@ -273,28 +276,38 @@ export default function HomeScreen({
 
         {/* ── Cloud sync banner ── */}
         {session ? (
-          <div className="bg-sky-50 border border-sky-100 rounded-xl px-3 py-2 flex items-center justify-between">
+          <div className={`rounded-xl px-3 py-2 flex items-center justify-between border ${
+            cloudSync
+              ? 'bg-sky-50 border-sky-100'
+              : 'bg-amber-50/80 border-amber-100'
+          }`}>
             <div className="min-w-0">
-              <p className="text-xs font-medium text-sky-700 truncate">{session.email}</p>
-              <p className="text-xs text-sky-500">Syncing enabled</p>
+              <p className={`text-xs font-medium truncate ${cloudSync ? 'text-sky-700' : 'text-amber-700'}`}>
+                {session.email}
+              </p>
+              <p className={`text-xs ${cloudSync ? 'text-sky-500' : 'text-amber-600'}`}>
+                {cloudSync ? 'Cloud sync on' : 'Cloud sync off — enable in Settings'}
+              </p>
             </div>
             <div className="flex items-center gap-1 ml-2 flex-shrink-0">
-              <button
-                onClick={handleSyncNow}
-                disabled={syncing}
-                title="Sync now"
-                className="p-1 rounded-md hover:bg-sky-100 text-sky-600 disabled:opacity-50 transition-colors"
-              >
-                <svg className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`}
-                  fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </button>
+              {cloudSync && (
+                <button
+                  onClick={handleSyncNow}
+                  disabled={syncing}
+                  title="Sync now"
+                  className="p-1 rounded-md hover:bg-sky-100 text-sky-600 disabled:opacity-50 transition-colors"
+                >
+                  <svg className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`}
+                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              )}
               <button
                 onClick={onSignOut}
                 title="Sign out"
-                className="p-1 rounded-md hover:bg-sky-100 text-sky-600 transition-colors"
+                className={`p-1 rounded-md transition-colors ${cloudSync ? 'hover:bg-sky-100 text-sky-600' : 'hover:bg-amber-100 text-amber-600'}`}
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}

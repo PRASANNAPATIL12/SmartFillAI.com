@@ -24,13 +24,19 @@ export default function SettingsScreen({ onBack }: Props): React.ReactElement {
     key: keyof Pick<UserSettings, 'autoSave' | 'showGhostText' | 'blockSensitiveDomains' | 'cloudSync'>
   ): Promise<void> {
     if (!settings) return;
-    const next = { ...settings, [key]: !settings[key] };
+    const newValue = !settings[key];
+    const next = { ...settings, [key]: newValue };
     setSettings(next);
     try {
       const confirmed = await sendToBackground<UserSettings>('UPDATE_SETTINGS', {
-        [key]: !settings[key],
+        [key]: newValue,
       });
       setSettings(confirmed);
+      // When cloud sync is just turned on, push any pending local data immediately
+      // so the user doesn't have to wait up to 5 minutes for the next alarm.
+      if (key === 'cloudSync' && newValue) {
+        sendToBackground('SYNC_NOW').catch(() => {});
+      }
     } catch {
       setSettings(settings);
     }
@@ -92,32 +98,46 @@ export default function SettingsScreen({ onBack }: Props): React.ReactElement {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-        {/* Autofill toggles */}
+        {/* Sync + Autofill toggles */}
         {settings ? (
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Autofill</p>
-            <div className="glass-card overflow-hidden">
-              <ToggleRow
-                label="Auto-save fields I fill"
-                description="Remembers values you type and updates them when changed"
-                checked={settings.autoSave}
-                onChange={() => toggleSetting('autoSave')}
-              />
-              <ToggleRow
-                label="Show field hints"
-                description="Outline fillable fields and preview what will be filled"
-                checked={settings.showGhostText}
-                onChange={() => toggleSetting('showGhostText')}
-              />
-              <ToggleRow
-                label="Block sensitive domains"
-                description="Disable autofill on banking and health websites"
-                checked={settings.blockSensitiveDomains}
-                onChange={() => toggleSetting('blockSensitiveDomains')}
-                last
-              />
+          <>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Sync</p>
+              <div className="glass-card overflow-hidden">
+                <ToggleRow
+                  label="Cloud sync"
+                  description="Back up your profile and sync it across browsers and devices"
+                  checked={settings.cloudSync}
+                  onChange={() => toggleSetting('cloudSync')}
+                  last
+                />
+              </div>
             </div>
-          </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Autofill</p>
+              <div className="glass-card overflow-hidden">
+                <ToggleRow
+                  label="Auto-save fields I fill"
+                  description="Remembers values you type and updates them when changed"
+                  checked={settings.autoSave}
+                  onChange={() => toggleSetting('autoSave')}
+                />
+                <ToggleRow
+                  label="Show field hints"
+                  description="Outline fillable fields and preview what will be filled"
+                  checked={settings.showGhostText}
+                  onChange={() => toggleSetting('showGhostText')}
+                />
+                <ToggleRow
+                  label="Block sensitive domains"
+                  description="Disable autofill on banking and health websites"
+                  checked={settings.blockSensitiveDomains}
+                  onChange={() => toggleSetting('blockSensitiveDomains')}
+                  last
+                />
+              </div>
+            </div>
+          </>
         ) : (
           <div className="glass-card px-4 py-6 flex justify-center">
             <span className="w-4 h-4 border-2 border-sky-400 border-t-transparent rounded-full animate-spin" />
