@@ -9,7 +9,7 @@ import {
   getCurrentUserId,
   refreshSessionIfNeeded,
 } from './auth-manager';
-import { pushSyncQueue, pullFromCloud } from './sync-engine';
+import { pushSyncQueue, pullFromCloud, pushFormFingerprints, pullFormFingerprints } from './sync-engine';
 import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
 import { generateEssay } from './essay-generator';
 import { classifyFields, type FieldClassifySpec } from './llm-classifier';
@@ -146,7 +146,12 @@ chrome.runtime.onStartup.addListener(() => {
   (async () => {
     try {
       const s = await getSettings();
-      if (s.cloudSync) await pullFromCloud();
+      if (s.cloudSync) {
+        await pullFromCloud();
+        // Phase AD.3 — also pull form fingerprints. Fire-and-forget so a
+        // fingerprint fetch failure doesn't block profile load.
+        pullFormFingerprints().catch(() => {});
+      }
     } catch { /* network down at boot — sync alarm will retry in 5 min */ }
   })();
 });
@@ -161,9 +166,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) {
     evictStaleCacheEntries().catch(() => {});
     refreshSessionIfNeeded().catch(() => {});
-    // Push pending local changes to Supabase when cloud sync is enabled
+    // Push pending local changes to Supabase when cloud sync is enabled.
+    // Phase AD.3 — also push form fingerprints learned since the last cycle.
     getSettings().then(s => {
-      if (s.cloudSync) pushSyncQueue().catch(() => {});
+      if (s.cloudSync) {
+        pushSyncQueue().catch(() => {});
+        pushFormFingerprints().catch(() => {});
+      }
     }).catch(() => {});
   }
 });
@@ -596,7 +605,10 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     // Push any locally-queued entries first (data entered before sign-in),
     // then pull the server's canonical state. Fire-and-forget so the popup
     // is not blocked — both operations are idempotent on failure.
+    // Phase AD.3 — also pull fingerprints so a fresh sign-in inherits any
+    // form memory the user has accumulated on other devices.
     pushSyncQueue().then(() => pullFromCloud()).catch(() => {});
+    pullFormFingerprints().catch(() => {});
     return { userId: session.userId, email: session.email };
   },
 
@@ -637,8 +649,22 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   },
 
   SYNC_NOW: async () => {
-    const [push, pull] = await Promise.all([pushSyncQueue(), pullFromCloud()]);
-    return { pushed: push.pushed, failed: push.failed, pulled: pull.pulled };
+    // Phase AD.3 — sync fingerprints alongside profile entries. Run all four
+    // in parallel; the partial-failure semantics match the profile path (caller
+    // sees aggregate counts, retries on next alarm if anything failed).
+    const [push, pull, fpPush, fpPull] = await Promise.all([
+      pushSyncQueue(),
+      pullFromCloud(),
+      pushFormFingerprints(),
+      pullFormFingerprints(),
+    ]);
+    return {
+      pushed: push.pushed,
+      failed: push.failed,
+      pulled: pull.pulled,
+      fingerprintsPushed: fpPush.pushed,
+      fingerprintsPulled: fpPull.pulled,
+    };
   },
 
   WIPE_ALL_DATA: async () => {

@@ -7,8 +7,15 @@ import {
   clearSyncQueue,
   replaceAll,
 } from './profile-store';
+import {
+  getAllFormFingerprints,
+  putFormFingerprint,
+  getFormFingerprint,
+} from '@/storage/idb';
+import type { FormFingerprint } from '../content-script/form-fingerprinter';
 
 const TABLE = 'profile_entries';
+const FINGERPRINT_TABLE = 'form_fingerprints';
 
 // ── Column mapping ─────────────────────────────────────────────────────────────
 // Our ProfileEntry uses camelCase userId; the DB column is user_id.
@@ -83,6 +90,80 @@ async function pushItem(client: any, item: SyncQueueItem, userId: string): Promi
       .eq('user_id', userId);
     if (error) throw error;
   }
+}
+
+// ── Form-fingerprint sync (Phase AD.3) ────────────────────────────────────────
+//
+// Whole-state sync — fingerprints are small (≤3 KB each, ≤~100 per user
+// typical) and change rarely, so an incremental queue isn't worth its cost.
+// Each cycle uploads every local fingerprint via upsert; merges on pull use
+// `lastUsedAt` as the tiebreaker so the more-recently-touched side wins.
+
+interface FormFingerprintRow {
+  user_id: string;
+  key: string;
+  ats_id: string;
+  payload: FormFingerprint;
+  updated_at: number;
+}
+
+/** Upload every locally-known fingerprint to Supabase via upsert. */
+export async function pushFormFingerprints(): Promise<{ pushed: number; failed: number }> {
+  const session = await getSession();
+  if (!session) return { pushed: 0, failed: 0 };
+
+  const all = await getAllFormFingerprints();
+  if (all.length === 0) return { pushed: 0, failed: 0 };
+
+  const client = await getAuthClient(session);
+  const rows: FormFingerprintRow[] = all.map(fp => ({
+    user_id:    session.userId,
+    key:        fp.key,
+    ats_id:     fp.atsId,
+    payload:    fp,
+    updated_at: fp.lastUsedAt,
+  }));
+
+  // Single batch upsert — Supabase handles the (user_id, key) primary-key conflict.
+  const { error } = await client.from(FINGERPRINT_TABLE).upsert(rows, {
+    onConflict: 'user_id,key',
+  });
+  if (error) return { pushed: 0, failed: rows.length };
+  return { pushed: rows.length, failed: 0 };
+}
+
+/**
+ * Pull every fingerprint for this user from Supabase. Merge into local IDB:
+ * for each row, if local has a newer lastUsedAt the local copy wins (the
+ * device that filled most recently has the better picture). Otherwise the
+ * cloud copy is written in.
+ */
+export async function pullFormFingerprints(): Promise<{ pulled: number }> {
+  const session = await getSession();
+  if (!session) return { pulled: 0 };
+
+  const client = await getAuthClient(session);
+  const { data: rows, error } = await client
+    .from(FINGERPRINT_TABLE)
+    .select('*')
+    .eq('user_id', session.userId);
+
+  if (error) throw error;
+  if (!rows || rows.length === 0) return { pulled: 0 };
+
+  let pulled = 0;
+  for (const row of rows as FormFingerprintRow[]) {
+    const remote = row.payload;
+    // Defensive: validate the payload has the fields we expect before writing.
+    if (!remote || typeof remote !== 'object' || !remote.key || !Array.isArray(remote.fields)) {
+      continue;
+    }
+    const local = await getFormFingerprint(remote.key);
+    if (local && local.lastUsedAt >= remote.lastUsedAt) continue; // local wins
+    await putFormFingerprint(remote);
+    pulled++;
+  }
+  return { pulled };
 }
 
 // ── Pull (Supabase → local) ───────────────────────────────────────────────────
