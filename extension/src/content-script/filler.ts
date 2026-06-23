@@ -107,7 +107,7 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
   // STEP 6.2 — Post-fill verification. If the value didn't stick (React
   // reverted, or the input has filters that rejected our write), log it
   // so we can see in the console and react accordingly.
-  const after = (el as HTMLInputElement).value ?? '';
+  let after = (el as HTMLInputElement).value ?? '';
   if (after !== value) {
     // Suppress false-positive for tel inputs: a phone widget may reformat our
     // value ("9448677888" → "(944) 867-7888") while the fill itself succeeded.
@@ -116,12 +116,49 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
       && after.replace(/\D/g, '') === value.replace(/\D/g, '')
       && after.replace(/\D/g, '').length >= 5;
     if (!isTelReformat) {
-      const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
-      console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
+      // Phase AD.4 — insertText fallback for stubborn controlled inputs.
+      // Some React/Vue/Angular components reject native-setter writes (e.g.
+      // input masks with strict validation, or wrappers that re-render from
+      // their own state on each keystroke). execCommand('insertText') goes
+      // through the editing pipeline the same way real typing does, so the
+      // framework sees it as user input rather than a programmatic write.
+      // No clipboard manipulation, no extra permissions required.
+      const retried = retryViaInsertText(el, value);
+      after = (el as HTMLInputElement).value ?? '';
+      if (!retried || after !== value) {
+        const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
+        console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
+      }
     }
   }
 
   return true;
+}
+
+/**
+ * Last-resort fill via `document.execCommand('insertText')`. Selects the
+ * existing input contents and replaces them with `value`. Looks like user
+ * typing to the framework — bypasses controlled-input guards that ignore
+ * the native value setter.
+ *
+ * Returns true when the value matches after the attempt. Safe to call on
+ * any non-disabled input/textarea.
+ */
+function retryViaInsertText(el: HTMLInputElement | HTMLTextAreaElement, value: string): boolean {
+  try {
+    el.focus();
+    if (typeof el.setSelectionRange === 'function') {
+      el.setSelectionRange(0, el.value.length);
+    }
+    const ok = document.execCommand('insertText', false, value);
+    if (!ok) return false;
+    // After execCommand the input event fires automatically, but some Angular
+    // change-detection setups also wait for 'change' before syncing state.
+    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    return el.value === value;
+  } catch {
+    return false;
+  }
 }
 
 /**

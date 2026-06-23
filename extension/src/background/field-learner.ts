@@ -15,7 +15,10 @@ const AUTOCOMPLETE_MAP: Record<string, string> = {
   'tel':             'phone_number',
   'tel-national':    'phone_number',
   'tel-local':       'phone_number',
-  'organization':    'company',
+  // Phase N.1 renamed the canonical key 'company' → 'current_company'.
+  // The autocomplete map was missed at the time; fixed here in AD.4.
+  'organization':       'current_company',
+  'organization-title': 'job_title',
   'street-address':  'address_line1',
   'address-line1':   'address_line1',
   'address-line2':   'address_line2',
