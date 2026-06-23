@@ -86,11 +86,11 @@ let bannerDismissed = false;
 let bannerVisible = false;
 
 // ── Fill-session state ────────────────────────────────────────────────────────
-// When the user clicks "Fill", we track which elements were already in matchMap
-// at fill-start. Any MATCHED field that appears during a fill session (e.g., a
-// conditional "visa type" field after the user selects "needs sponsorship") is
-// auto-filled without requiring a second click.
-let fillSessionActive = false;
+// hasFilled: permanent once the user clicks Fill. Any MATCHED field that
+//   appears after that click — including conditional dropdowns revealed by user
+//   interaction (e.g. race field after selecting "No" for Hispanic/Latino) —
+//   is auto-filled immediately, regardless of how much time has passed.
+let hasFilled = false;
 let preFillSnapshot: Set<HTMLElement> = new Set();
 
 // ── Frame coordination ───────────────────────────────────────────────────────
@@ -401,10 +401,11 @@ async function scanFields(): Promise<void> {
     sendToBackground('CACHE_FIELD_MATCH', entry).catch(() => {});
   }
 
-  // Phase 3: auto-fill conditional fields that appeared AFTER the fill session
-  // started (e.g., "visa type" shown after "sponsorship = Yes"). Only fires
-  // during an active fill session — never auto-fills on page load.
-  if (fillSessionActive) {
+  // Phase 3: auto-fill conditional fields that appeared after the user first
+  // clicked Fill (e.g., "visa type" shown after "sponsorship = Yes", or a race
+  // dropdown revealed after selecting "No" for Hispanic/Latino). Fires whenever
+  // hasFilled is true — not limited to the 3.5s fill-session window.
+  if (hasFilled) {
     for (const [el, state] of matchMap) {
       if (!preFillSnapshot.has(el)
           && state.result.status === 'MATCHED'
@@ -571,9 +572,8 @@ function triggerBannerFill(): void {
   bannerCooldownUntil = Date.now() + 6500;
 
   // Phase 3: snapshot elements known BEFORE the fill so scanFields() can
-  // auto-fill any NEW matched fields that appear during the session (e.g.,
-  // conditional "visa type" after selecting "needs sponsorship").
-  fillSessionActive = true;
+  // auto-fill any NEW matched fields that appear after (conditional fields).
+  hasFilled = true;
   preFillSnapshot = new Set(matchMap.keys());
 
   // Top frame fills its own first, then broadcasts to iframes
@@ -590,7 +590,6 @@ function triggerBannerFill(): void {
       // STEP 1.3 — wait long enough for iframe combobox fills to finish.
       // Each combobox takes up to ~560ms; 5 fields is ~2.8s; 3.5s is safe.
       pendingFillTimer = setTimeout(() => {
-        fillSessionActive = false;
         showSuccessBanner(pendingFilled);
         bannerCooldownUntil = Date.now() + 2800;
         lastBannerSig = '';
@@ -601,7 +600,6 @@ function triggerBannerFill(): void {
         setTimeout(() => { renderAggregatedBanner(); }, 2900);
       }, 3500);
     }).catch(() => {
-      fillSessionActive = false;
       showSuccessBanner(0);
       bannerCooldownUntil = Date.now() + 2800;
       lastBannerSig = '';

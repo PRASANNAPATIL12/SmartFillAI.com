@@ -334,6 +334,57 @@ const CITY: AliasGroup[] = [
   { canonical: 'Ho Chi Minh City', aliases: ['Ho Chi Minh City', 'Saigon'] },
 ];
 
+const RACE_ETHNICITY: AliasGroup[] = [
+  {
+    canonical: 'Asian',
+    aliases: ['Asian', 'Asian American', 'Asian or Pacific Islander', 'Asian/Pacific Islander'],
+  },
+  {
+    canonical: 'Black or African American',
+    aliases: ['Black or African American', 'Black', 'African American', 'Black/African American'],
+  },
+  {
+    canonical: 'Hispanic or Latino',
+    aliases: [
+      'Hispanic or Latino', 'Hispanic', 'Latino', 'Latinx', 'Hispanic/Latino',
+      'Hispanic or Latinx', 'Latin American',
+    ],
+  },
+  {
+    canonical: 'White',
+    aliases: ['White', 'Caucasian', 'White/Caucasian', 'White (Not Hispanic or Latino)'],
+  },
+  {
+    canonical: 'American Indian or Alaska Native',
+    aliases: [
+      'American Indian or Alaska Native', 'American Indian or Alaskan Native',
+      'Native American', 'Indigenous American', 'American Indian',
+    ],
+  },
+  {
+    canonical: 'Native Hawaiian or Other Pacific Islander',
+    aliases: [
+      'Native Hawaiian or Other Pacific Islander', 'Pacific Islander',
+      'Hawaiian or Pacific Islander', 'Native Hawaiian',
+    ],
+  },
+  {
+    canonical: 'Two or More Races',
+    aliases: [
+      'Two or More Races', 'Two or more races', 'Multiracial', 'Multiple races',
+      'Biracial', 'Two or more',
+    ],
+  },
+  {
+    canonical: 'Prefer not to say',
+    aliases: [
+      'Prefer not to say', 'Decline to state', 'Decline to identify',
+      'I prefer not to answer', 'I do not wish to answer',
+      'Prefer not to disclose', 'Prefer not to self-identify',
+    ],
+  },
+];
+
 const TABLES: Record<string, AliasGroup[]> = {
   gender:             GENDER,
   degree:             DEGREE,
@@ -344,6 +395,7 @@ const TABLES: Record<string, AliasGroup[]> = {
   city:               CITY,
   current_location:   CITY,
   preferred_location: CITY,
+  race_ethnicity:     RACE_ETHNICITY,
 };
 
 /**

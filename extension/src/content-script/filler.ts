@@ -109,10 +109,8 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
   // so we can see in the console and react accordingly.
   const after = (el as HTMLInputElement).value ?? '';
   if (after !== value) {
-    console.warn('[SmartFillAI] fill mismatch:', {
-      label: el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?',
-      before, after, expected: value,
-    });
+    const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
+    console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
     // If reverted, we still return true because we did our best. The
     // ghost-removal still happens. User can retry.
   }
