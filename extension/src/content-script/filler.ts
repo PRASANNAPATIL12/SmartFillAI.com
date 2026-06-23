@@ -117,14 +117,20 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
       && after.replace(/\D/g, '').length >= 5;
     if (!isTelReformat) {
       // Phase AD.4 — insertText fallback for stubborn controlled inputs.
-      // Some React/Vue/Angular components reject native-setter writes (e.g.
-      // input masks with strict validation, or wrappers that re-render from
-      // their own state on each keystroke). execCommand('insertText') goes
-      // through the editing pipeline the same way real typing does, so the
-      // framework sees it as user input rather than a programmatic write.
-      // No clipboard manipulation, no extra permissions required.
-      const retried = retryViaInsertText(el, value);
+      // Two-step fallback chain for stubborn controlled inputs:
+      //   AE.3 — char-by-char InputEvent simulation (works when frameworks
+      //          listen for inputType='insertText' rather than the value setter)
+      //   AD.4 — execCommand('insertText') (works on contenteditable hosts
+      //          and most legacy controlled inputs)
+      // Either is sufficient on its own for the common cases; combining them
+      // catches a small tail of React/Vue widgets that reject one but accept
+      // the other. No clipboard manipulation, no extra permissions required.
+      let retried = retryViaCharByChar(el, value);
       after = (el as HTMLInputElement).value ?? '';
+      if (!retried || after !== value) {
+        retried = retryViaInsertText(el, value);
+        after = (el as HTMLInputElement).value ?? '';
+      }
       if (!retried || after !== value) {
         const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
         console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
@@ -133,6 +139,78 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
   }
 
   return true;
+}
+
+/**
+ * Phase AE.3 — char-by-char InputEvent fallback.
+ *
+ * Some React/Vue controlled inputs ignore programmatic writes (even via the
+ * native value setter + valueTracker reset) and listen specifically for
+ * `InputEvent` with `inputType: 'insertText'`. This simulates user typing
+ * one character at a time:
+ *
+ *   keydown → InputEvent('input', {inputType: 'insertText', data: char})
+ *           → cumulative native-setter write
+ *           → keyup
+ *
+ * Final 'change' event fires once at the end so Angular change-detection
+ * sync triggers. Returns true only when el.value matches `value` after.
+ *
+ * Capped at 100 characters — anything longer is essay territory where the
+ * LLM tier (Step 6) handles it differently, and we don't want to fire 400+
+ * synchronous events. Skipped during IME composition so we don't fight the
+ * user's input method.
+ */
+function retryViaCharByChar(el: HTMLInputElement | HTMLTextAreaElement, value: string): boolean {
+  if (value.length === 0 || value.length > 100) return false;
+  // Skip when an IME composition is active — typing chars in the middle of
+  // composition produces garbled output.
+  if (el.dataset.composition === 'true') return false;
+
+  const setter = el instanceof HTMLTextAreaElement ? nativeTextareaSetter : nativeInputSetter;
+
+  try {
+    el.focus();
+    // Clear existing content first so we know the starting state.
+    if (setter) setter.call(el, '');
+    else el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+
+    let accum = '';
+    for (const ch of value) {
+      const code = keyboardCodeFor(ch);
+      el.dispatchEvent(new KeyboardEvent('keydown', {
+        key: ch, code, bubbles: true, cancelable: true,
+      }));
+      el.dispatchEvent(new InputEvent('input', {
+        data: ch, inputType: 'insertText',
+        bubbles: true, cancelable: true, composed: true,
+      }));
+      accum += ch;
+      if (setter) setter.call(el, accum);
+      else el.value = accum;
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, code, bubbles: true }));
+    }
+
+    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    return el.value === value;
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort KeyboardEvent.code for a single character. Informational only —
+ *  InputEvent.data carries the actual data, and many frameworks don't care
+ *  about `code` for ASCII typing. */
+function keyboardCodeFor(ch: string): string {
+  if (/^[A-Za-z]$/.test(ch)) return 'Key' + ch.toUpperCase();
+  if (/^[0-9]$/.test(ch))    return 'Digit' + ch;
+  if (ch === ' ')             return 'Space';
+  if (ch === '-')             return 'Minus';
+  if (ch === '.')             return 'Period';
+  if (ch === ',')             return 'Comma';
+  if (ch === '@')             return 'Digit2';   // shifted on US keyboard
+  return 'Unidentified';
 }
 
 /**
