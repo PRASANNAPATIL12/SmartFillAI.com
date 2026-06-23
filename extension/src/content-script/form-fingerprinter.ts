@@ -196,6 +196,19 @@ export interface FingerprintFieldEntry {
   useCount: number;
 }
 
+/**
+ * Phase AE.2 — provenance flag.
+ *
+ *   'template' — seeded from an ATS template on extension install. NOT pushed
+ *                to Supabase (identical for all users; pushing wastes bandwidth).
+ *   'learned'  — at least one real user fill matched this fingerprint, OR the
+ *                user explicitly corrected a field. Eligible for cloud sync.
+ *
+ * `mergeFingerprint` automatically promotes template → learned on first real
+ * fill activity.
+ */
+export type FingerprintSource = 'template' | 'learned';
+
 export interface FormFingerprint {
   key: string;                  // `${atsId}::${structuralHash}`
   atsId: string;
@@ -205,6 +218,8 @@ export interface FormFingerprint {
   createdAt: number;
   lastUsedAt: number;
   useCount: number;
+  /** Provenance. Defaults to 'learned' on old persisted rows (handled at read time). */
+  source?: FingerprintSource;
 }
 
 /**
@@ -267,6 +282,7 @@ export function mergeFingerprint(
       createdAt: now,
       lastUsedAt: now,
       useCount: 1,
+      source: 'learned',  // real user fill → real provenance from the start
     };
   }
 
@@ -295,5 +311,75 @@ export function mergeFingerprint(
     fields: Array.from(merged.values()),
     lastUsedAt: now,
     useCount: existing.useCount + 1,
+    // Phase AE.2 — any real-fill merge promotes a template fingerprint to
+    // 'learned' status, making it eligible for cloud sync from this point.
+    source: 'learned',
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ATS template seeding (Phase AE.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+import type { AtsTemplate } from './ats-templates';
+
+/**
+ * Build a synthetic FormFingerprint from an ATS template. Each template field
+ * — and each of its `aliases` — becomes a separate FingerprintFieldEntry with
+ * the same canonicalKey, so cosmetic label variants across employers all hit.
+ *
+ * The structural hash is computed from the template's field list. It may not
+ * match any specific employer's exact field order, but Step 1.6 looks up
+ * individual nameHashes anyway — the per-field cache survives a structural-
+ * hash miss because the matcher's `findFingerprintEntry` is by-name only.
+ *
+ * Confidence: 0.95 on every entry, slightly below user-confirmed (1.0) so the
+ * merge logic always prefers a real correction over a templated guess.
+ *
+ * @param now Optional timestamp injection for deterministic tests.
+ */
+export function fingerprintFromTemplate(
+  t: AtsTemplate,
+  now: number = Date.now(),
+): FormFingerprint {
+  const entries: FingerprintFieldEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const field of t.fields) {
+    const allLabels = [field.label, ...(field.aliases ?? [])];
+    for (const label of allLabels) {
+      const hashed = nameHash(label);
+      if (!hashed) continue;
+      // De-duplicate: if two labels normalize to the same hash, take the first.
+      if (seen.has(hashed)) continue;
+      seen.add(hashed);
+      entries.push({
+        nameHash:     hashed,
+        role:         field.role,
+        canonicalKey: field.canonicalKey,
+        confidence:   0.95,
+        learnedAt:    now,
+        useCount:     0,         // template seeds start at 0 — a real fill bumps to 1
+      });
+    }
+  }
+
+  // Structural hash derived from the field list (label-only, so it's stable
+  // across template-version-1 lifetime). Different template versions produce
+  // different hashes so old fingerprints don't collide with new ones.
+  const structuralHash = djb2(
+    JSON.stringify(t.fields.map(f => ({ l: nameHash(f.label), r: f.role })))
+  );
+
+  return {
+    key: `${t.atsId}::${structuralHash}`,
+    atsId: t.atsId,
+    structuralHash,
+    exemplarUrl: `template:${t.atsId}@v${t.version}`,
+    fields: entries,
+    createdAt: now,
+    lastUsedAt: now,
+    useCount: 0,
+    source: 'template',
   };
 }

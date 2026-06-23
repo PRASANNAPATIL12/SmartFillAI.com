@@ -320,3 +320,117 @@ describe('findFingerprintEntry', () => {
     expect(findFingerprintEntry(fp, sig)).toBeUndefined();
   });
 });
+
+// ── Phase AE.2 — Template seeding ──────────────────────────────────────────
+
+import { fingerprintFromTemplate } from '../content-script/form-fingerprinter';
+import { ATS_TEMPLATES } from '../content-script/ats-templates';
+
+describe('fingerprintFromTemplate', () => {
+  const minimalTemplate = {
+    atsId: 'greenhouse',
+    version: 1,
+    fields: [
+      { label: 'First Name',  role: 'textbox' as const, canonicalKey: 'first_name' },
+      { label: 'Last Name',   role: 'textbox' as const, canonicalKey: 'last_name' },
+      { label: 'Email',       role: 'textbox' as const, canonicalKey: 'email' },
+    ],
+  };
+
+  test('produces a FormFingerprint with one entry per field', () => {
+    const fp = fingerprintFromTemplate(minimalTemplate, 1000);
+    expect(fp.atsId).toBe('greenhouse');
+    expect(fp.fields).toHaveLength(3);
+    expect(fp.source).toBe('template');
+    expect(fp.useCount).toBe(0);
+    expect(fp.createdAt).toBe(1000);
+    expect(fp.lastUsedAt).toBe(1000);
+  });
+
+  test('every entry sits at confidence 0.95 (below user-confirmed 1.0)', () => {
+    const fp = fingerprintFromTemplate(minimalTemplate);
+    for (const f of fp.fields) expect(f.confidence).toBe(0.95);
+  });
+
+  test('aliases expand into multiple nameHash entries with the same canonicalKey', () => {
+    const t = {
+      atsId: 'greenhouse',
+      version: 1,
+      fields: [
+        { label: 'Resume', aliases: ['Resume/CV', 'Upload Resume'], role: 'file' as const, canonicalKey: 'resume' },
+      ],
+    };
+    const fp = fingerprintFromTemplate(t);
+    expect(fp.fields.length).toBeGreaterThanOrEqual(3); // primary + 2 aliases (modulo dedup)
+    for (const f of fp.fields) expect(f.canonicalKey).toBe('resume');
+    const hashes = new Set(fp.fields.map(f => f.nameHash));
+    expect(hashes.size).toBe(fp.fields.length); // no duplicate hashes
+  });
+
+  test('cosmetic-duplicate labels collapse to a single entry', () => {
+    // "First Name" and "first name " both normalize to "first name" → same hash.
+    const t = {
+      atsId: 'lever',
+      version: 1,
+      fields: [
+        { label: 'First Name', aliases: ['first name '], role: 'textbox' as const, canonicalKey: 'first_name' },
+      ],
+    };
+    const fp = fingerprintFromTemplate(t);
+    expect(fp.fields).toHaveLength(1);
+  });
+
+  test('key has the form ${atsId}::${structuralHash}', () => {
+    const fp = fingerprintFromTemplate(minimalTemplate);
+    expect(fp.key.startsWith('greenhouse::')).toBe(true);
+    expect(fp.structuralHash.length).toBeGreaterThan(0);
+  });
+
+  test('structural hash is deterministic across calls', () => {
+    const a = fingerprintFromTemplate(minimalTemplate, 1000);
+    const b = fingerprintFromTemplate(minimalTemplate, 2000);
+    expect(a.structuralHash).toBe(b.structuralHash); // timestamp doesn't affect hash
+  });
+
+  test('every shipped template builds without throwing', () => {
+    for (const t of ATS_TEMPLATES) {
+      const fp = fingerprintFromTemplate(t);
+      expect(fp.atsId).toBe(t.atsId);
+      expect(fp.fields.length).toBeGreaterThan(0);
+      expect(fp.source).toBe('template');
+    }
+  });
+
+  test('merge promotes source from template to learned on first real fill', () => {
+    const template = fingerprintFromTemplate(minimalTemplate, 1000);
+    expect(template.source).toBe('template');
+    // Simulate a real fill of the "First Name" field.
+    const candidates = [
+      { nameHash: template.fields[0].nameHash, role: 'textbox', canonicalKey: 'first_name', confidence: 0.99 },
+    ];
+    const inputs = {
+      atsId: template.atsId,
+      structuralHash: template.structuralHash,
+      key: template.key,
+      fieldCount: 3,
+      detection: { atsId: 'greenhouse', confidence: 1.0, method: 'direct_hostname' as const },
+    };
+    const merged = mergeFingerprint(template, inputs, candidates, 'https://boards.greenhouse.io/x', 2000);
+    expect(merged.source).toBe('learned');
+    // useCount on the matched field bumps; existing entries persist.
+    const matched = merged.fields.find(f => f.nameHash === template.fields[0].nameHash);
+    expect(matched?.useCount).toBe(1);
+  });
+
+  test('Greenhouse template includes the EEO fields we care about', () => {
+    const greenhouse = ATS_TEMPLATES.find(t => t.atsId === 'greenhouse');
+    expect(greenhouse).toBeDefined();
+    const canonicalKeys = new Set(greenhouse!.fields.map(f => f.canonicalKey));
+    expect(canonicalKeys.has('first_name')).toBe(true);
+    expect(canonicalKeys.has('email')).toBe(true);
+    expect(canonicalKeys.has('race_ethnicity')).toBe(true);
+    expect(canonicalKeys.has('hispanic_latino')).toBe(true);
+    expect(canonicalKeys.has('veteran_status')).toBe(true);
+    expect(canonicalKeys.has('disability_status')).toBe(true);
+  });
+});

@@ -66,6 +66,8 @@ import {
   bumpFormFingerprintUsage,
 } from '@/storage/idb';
 import type { FormFingerprint } from '../content-script/form-fingerprinter';
+import { fingerprintFromTemplate } from '../content-script/form-fingerprinter';
+import { ATS_TEMPLATES, ATS_TEMPLATES_BUNDLE_VERSION } from '../content-script/ats-templates';
 
 // ── Resume Q&A pre-generation ────────────────────────────────────────────────
 
@@ -136,13 +138,41 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
   }
 
   ensureAlarms().catch(() => {});
+  // Phase AE.2 — seed ATS templates so first-visit Greenhouse/Workday/Lever
+  // forms get day-one auto-fill without waiting for the user to confirm 3+
+  // matches. Idempotent: a chrome.storage flag prevents re-seeding within the
+  // same bundle version. Runs on both 'install' and 'update' events to pick
+  // up version bumps.
+  seedAtsTemplatesIfNeeded().catch(() => {});
 });
+
+/**
+ * Phase AE.2 — write synthetic FormFingerprints derived from ATS_TEMPLATES.
+ * Idempotent across multiple calls within the same template-bundle version.
+ */
+async function seedAtsTemplatesIfNeeded(): Promise<void> {
+  const flagKey = `ats_templates_seeded_v${ATS_TEMPLATES_BUNDLE_VERSION}`;
+  const stored = await chrome.storage.local.get(flagKey);
+  if (stored[flagKey] === true) return;
+  for (const template of ATS_TEMPLATES) {
+    try {
+      const fp = fingerprintFromTemplate(template);
+      await putFormFingerprint(fp);
+    } catch {
+      // Skip individual template failures so one bad entry doesn't block the rest.
+    }
+  }
+  await chrome.storage.local.set({ [flagKey]: true });
+}
 
 // Recreate alarms after a browser restart — onInstalled does not fire then.
 // Also pull from cloud on startup so data from other browsers is visible
 // immediately, without waiting up to 5 minutes for the first sync alarm.
 chrome.runtime.onStartup.addListener(() => {
   ensureAlarms().catch(() => {});
+  // Phase AE.2 — defensive backstop in case the SW died before the seeder
+  // finished on install. Idempotent.
+  seedAtsTemplatesIfNeeded().catch(() => {});
   (async () => {
     try {
       const s = await getSettings();

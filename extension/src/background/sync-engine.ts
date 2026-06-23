@@ -107,16 +107,28 @@ interface FormFingerprintRow {
   updated_at: number;
 }
 
-/** Upload every locally-known fingerprint to Supabase via upsert. */
+/**
+ * Upload every locally-known LEARNED fingerprint to Supabase via upsert.
+ *
+ * Phase AE.2 — template fingerprints (`source: 'template'`) are seeded
+ * identically on every device from the bundled ATS_TEMPLATES, so pushing
+ * them would mean N users × M templates duplicate rows in the cloud for no
+ * benefit. We skip them here. A template is promoted to `source: 'learned'`
+ * on the first real fill (via mergeFingerprint) — from that point on it
+ * syncs normally.
+ */
 export async function pushFormFingerprints(): Promise<{ pushed: number; failed: number }> {
   const session = await getSession();
   if (!session) return { pushed: 0, failed: 0 };
 
   const all = await getAllFormFingerprints();
-  if (all.length === 0) return { pushed: 0, failed: 0 };
+  // Filter out unpromoted templates. Old persisted rows without a `source`
+  // field default to 'learned' so they still sync (no migration needed).
+  const syncable = all.filter(fp => (fp.source ?? 'learned') !== 'template');
+  if (syncable.length === 0) return { pushed: 0, failed: 0 };
 
   const client = await getAuthClient(session);
-  const rows: FormFingerprintRow[] = all.map(fp => ({
+  const rows: FormFingerprintRow[] = syncable.map(fp => ({
     user_id:    session.userId,
     key:        fp.key,
     ats_id:     fp.atsId,
