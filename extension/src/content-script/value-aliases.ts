@@ -311,6 +311,29 @@ function yearsOfExperienceAliases(value: string): string[] {
   return Array.from(variants);
 }
 
+// City name aliases — covers renamed Indian cities (official vs common names)
+// and a few international equivalents. Stored as AliasGroup[] so the same
+// lookup path works: find the group whose aliases include the stored value,
+// return all aliases so both spellings can match the dropdown option.
+const CITY: AliasGroup[] = [
+  { canonical: 'Bengaluru', aliases: ['Bengaluru', 'Bangalore', 'Bengalooru', 'Bangaluru'] },
+  { canonical: 'Mumbai',    aliases: ['Mumbai', 'Bombay'] },
+  { canonical: 'Chennai',   aliases: ['Chennai', 'Madras'] },
+  { canonical: 'Kolkata',   aliases: ['Kolkata', 'Calcutta', 'Kolkatta'] },
+  { canonical: 'Pune',      aliases: ['Pune', 'Poona', 'Puna'] },
+  { canonical: 'New Delhi', aliases: ['New Delhi', 'Delhi', 'NCR', 'Delhi NCR'] },
+  { canonical: 'Hyderabad', aliases: ['Hyderabad', 'Cyberabad', 'Hitec City'] },
+  { canonical: 'Kochi',     aliases: ['Kochi', 'Cochin', 'Ernakulam'] },
+  { canonical: 'Thiruvananthapuram', aliases: ['Thiruvananthapuram', 'Trivandrum'] },
+  { canonical: 'Vadodara',  aliases: ['Vadodara', 'Baroda'] },
+  { canonical: 'Mysuru',    aliases: ['Mysuru', 'Mysore'] },
+  { canonical: 'Belagavi',  aliases: ['Belagavi', 'Belgaum'] },
+  { canonical: 'Hubballi',  aliases: ['Hubballi', 'Hubli'] },
+  // International
+  { canonical: 'Beijing',   aliases: ['Beijing', 'Peking'] },
+  { canonical: 'Ho Chi Minh City', aliases: ['Ho Chi Minh City', 'Saigon'] },
+];
+
 const TABLES: Record<string, AliasGroup[]> = {
   gender:             GENDER,
   degree:             DEGREE,
@@ -318,6 +341,9 @@ const TABLES: Record<string, AliasGroup[]> = {
   work_authorization: WORK_AUTHORIZATION,
   employment_type:    EMPLOYMENT_TYPE,
   yes_no:             YES_NO,
+  city:               CITY,
+  current_location:   CITY,
+  preferred_location: CITY,
 };
 
 /**

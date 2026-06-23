@@ -46,6 +46,12 @@ const VALIDATORS: Record<string, (value: string) => boolean> = {
     const n = Number(v.trim().replace(/[^\d.]/g, ''));
     return Number.isFinite(n) && n >= 0 && n <= 70;
   },
+  // Location keys use alias TABLES for dropdown matching but any city name is
+  // a valid profile value (open set). Explicit validators prevent the
+  // hasValueAliases path from rejecting "San Francisco", "Austin", etc.
+  city:               () => true,
+  current_location:   () => true,
+  preferred_location: () => true,
 };
 
 /**

@@ -41,8 +41,8 @@ function markFillFailed(el: HTMLElement, value: string, optionTexts: string[]): 
 // ── Detection ────────────────────────────────────────────────────────────────
 
 export function isCombobox(el: HTMLElement): boolean {
-  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false;
   if (el.getAttribute('role') === 'combobox') return true;
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false;
   const ariaAuto = el.getAttribute('aria-autocomplete');
   if (ariaAuto === 'list' || ariaAuto === 'both') return true;
   const controls = el.getAttribute('aria-controls');
@@ -86,6 +86,13 @@ export function getComboboxDisplayValue(el: HTMLElement): string {
   // 1. Some frameworks keep the committed value in input.value.
   const inputValue = ((el as HTMLInputElement).value ?? '').trim();
   if (inputValue) return inputValue;
+
+  // 1b. Angular Material mat-select value display
+  const matValue = el.querySelector?.('.mat-mdc-select-value-text, .mat-select-value-text, [class*="select-value-text"]');
+  if (matValue) {
+    const text = (matValue.textContent ?? '').trim();
+    if (text) return text;
+  }
 
   // 2. Walk UP through ancestors, searching at each level for a display element.
   let ancestor: HTMLElement | null = el.parentElement;
@@ -191,11 +198,18 @@ function findControlAncestor(el: HTMLElement): HTMLElement {
 
 // ── Listbox lookup ────────────────────────────────────────────────────────────
 
-export function findListbox(el: HTMLInputElement | HTMLTextAreaElement): HTMLElement | null {
+export function findListbox(el: HTMLElement): HTMLElement | null {
   // 1. aria-controls is the most explicit and reliable link
   const controls = el.getAttribute('aria-controls');
   if (controls) {
     const byId = document.getElementById(controls);
+    if (byId) return byId;
+  }
+
+  // 1b. aria-owns (Angular Material uses this instead of aria-controls)
+  const owns = el.getAttribute('aria-owns');
+  if (owns) {
+    const byId = document.getElementById(owns);
     if (byId) return byId;
   }
 
@@ -262,14 +276,37 @@ function optionMatches(option: HTMLElement, aliases: string[]): boolean {
   const stripped = rawText.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
   const full     = rawText.toLowerCase();
   if (!stripped && !full) return false;
+
+  // First-component of "City, State, Country" options — prefer exact match on
+  // the city name alone so "Bangalore Rural, Karnataka" doesn't swallow "Bangalore".
+  const firstComp = stripped.split(',')[0].trim();
+
   return aliases.some(a => {
     const al = a.toLowerCase().trim();
     if (!al) return false;
+    // Exact full-text match — always safe
+    if (stripped === al || full === al) return true;
+    // First-component exact match for location options (beats partial containment)
+    if (firstComp === al) return true;
     // Short aliases (ISO2 codes, single-digit calling codes) use exact match only.
-    // Substring matching would cause false positives: "IN" (India) matches "Finland"
-    // because "finland".includes("in") is true, and Finland sorts before India.
-    if (al.length <= 2) return stripped === al || full === al;
-    return stripped === al || stripped.includes(al) || full.includes(al);
+    // Substring matching would cause false positives: "IN" (India) matches "Finland".
+    if (al.length <= 2) return false;
+    // Partial containment — guard against alias being a prefix of a longer word.
+    // "bangalore" must NOT match "bangalore rural": the char after the alias
+    // inside the stripped text would be a letter (space or comma is fine).
+    if (stripped.includes(al)) {
+      const idx = stripped.indexOf(al);
+      const charAfter = stripped[idx + al.length];
+      if (charAfter && /[a-z]/i.test(charAfter)) return false;
+      return true;
+    }
+    if (full.includes(al)) {
+      const idx = full.indexOf(al);
+      const charAfter = full[idx + al.length];
+      if (charAfter && /[a-z]/i.test(charAfter)) return false;
+      return true;
+    }
+    return false;
   });
 }
 
@@ -278,6 +315,42 @@ function dispatchKey(el: HTMLElement, key: string): void {
   const init: KeyboardEventInit = { key, code: key, bubbles: true, cancelable: true };
   el.dispatchEvent(new KeyboardEvent('keydown', init));
   el.dispatchEvent(new KeyboardEvent('keyup',   init));
+}
+
+/**
+ * Dismiss any open dropdown overlays. Tries multiple strategies because
+ * Angular Material CDK overlays ignore synthetic isTrusted:false events
+ * on document.body.
+ */
+export async function ensureAllDropdownsClosed(trigger?: HTMLElement): Promise<void> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const anyOpen = document.querySelector<HTMLElement>(
+      '[role="listbox"], .cdk-overlay-pane'
+    );
+    if (!anyOpen) return;
+    const s = anyOpen instanceof HTMLElement ? window.getComputedStyle(anyOpen) : null;
+    if (s && (s.display === 'none' || s.visibility === 'hidden')) return;
+
+    if (attempt === 0) {
+      // Strategy 1: Escape on the currently focused element (catches CDK search input)
+      const active = document.activeElement as HTMLElement | null;
+      if (active && active !== document.body) {
+        dispatchKey(active, 'Escape');
+      }
+    } else if (attempt === 1) {
+      // Strategy 2: Click the CDK backdrop (Angular Material's own close mechanism)
+      const backdrop = document.querySelector<HTMLElement>('.cdk-overlay-backdrop');
+      if (backdrop) {
+        backdrop.click();
+      } else if (trigger) {
+        dispatchKey(trigger, 'Escape');
+      }
+    } else {
+      // Strategy 3: Fallback body mousedown (works for non-Angular widgets)
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    }
+    await sleep(60);
+  }
 }
 
 /**
@@ -390,7 +463,7 @@ export async function peekOptions(el: HTMLElement): Promise<string[]> {
         .map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim())
         .filter(Boolean)
     : [];
-  document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // close panel
+  await ensureAllDropdownsClosed(el);
   return opts.slice(0, 60);
 }
 
@@ -597,6 +670,7 @@ export async function fillButtonDropdown(
   }
 
   if (!panel) {
+    await ensureAllDropdownsClosed(el);
     markFillFailed(el, value, []);
     return false;
   }
@@ -656,6 +730,7 @@ export async function fillButtonDropdown(
     return true;
   }
 
+  await ensureAllDropdownsClosed(el);
   markFillFailed(el, value, optionTexts);
   return false;
 }

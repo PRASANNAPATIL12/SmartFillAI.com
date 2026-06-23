@@ -44,6 +44,7 @@ export function findAllValidEntries(profile: ProfileEntry[], canonicalKey: strin
 // appears INSIDE a long question, the match is almost certainly wrong.
 const SIMPLE_NOUN_KEYS = new Set([
   'country', 'city', 'state', 'zip_code', 'street_address', 'address_line2',
+  'current_location', 'preferred_location',
   'first_name', 'last_name', 'full_name', 'middle_name', 'nationality',
 ]);
 const QUESTION_RE = /\?|\b(are|do|does|did|have|has|will|would|can|could|should|is|was|were)\s+you\b/i;
@@ -355,6 +356,10 @@ const RULES: Rule[] = [
     negativePattern: /\bemail\b|\bweb\b|url|github|linkedin/i },
   { canonical: 'address_line2', confidence: 0.97, reason: 'pattern: address line 2',
     pattern: /address.?line.?2|apt|suite|unit\b|floor\b|building/i },
+  { canonical: 'preferred_location', confidence: 0.93, reason: 'pattern: preferred work city',
+    pattern: /preferred.{0,10}location|prefer.{0,10}city|preferred.{0,10}office.{0,10}location/i },
+  { canonical: 'current_location',   confidence: 0.93, reason: 'pattern: current/present city',
+    pattern: /current.{0,10}location|current.{0,10}city|present.{0,10}location|residing.{0,10}city|home.{0,10}city|base.{0,10}location/i },
   { canonical: 'city', confidence: 0.95, reason: 'pattern: city',
     pattern: /\bcity\b|\btown\b|\blocality\b|\bmunicipality\b/i },
   { canonical: 'state', confidence: 0.94, reason: 'pattern: state/province',
@@ -412,6 +417,8 @@ const RULES: Rule[] = [
     pattern: /years?.?of?.?experience|experience.?years?|how.?many.?years/i },
   { canonical: 'work_authorization', confidence: 0.95, reason: 'pattern: work authorization',
     pattern: /work.?auth|authorized.?to.?work|eligible.?to.?work|visa.?status|work.?permit/i },
+  { canonical: 'visa_type',          confidence: 0.95, reason: 'pattern: visa type',
+    pattern: /visa.?type|type.?of.?visa|work.?visa\b|h.?1.?b\b|opt\b|stem.?opt|ead\b|visa.?categor/i },
   { canonical: 'salary_expectation', confidence: 0.95, reason: 'pattern: salary expectation',
     pattern: /salary.?expect|expected.?salary|desired.?salary|compensation.?expect/i },
   { canonical: 'notice_period', confidence: 0.95, reason: 'pattern: notice period',
@@ -523,6 +530,15 @@ const OPTION_SET_KEYS = ['gender', 'degree', 'education_level', 'employment_type
 function classifyByOptionSet(sig: FieldSignature, profile: ProfileEntry[]): MatchResult | null {
   const opts = sig.options;
   if (!opts || opts.length === 0) return null;
+
+  // Guard: if the label clearly identifies this as a city / location field,
+  // don't override with option-set classification. Prevents "Preferred Location"
+  // from being classified as 'country' because UK/USA appear in the option list.
+  const combinedLabel = combine(sig).toLowerCase();
+  if (/preferred.{0,10}location|current.{0,10}location|work.{0,10}city|home.{0,10}city|base.{0,10}location/i
+      .test(combinedLabel)) {
+    return null;
+  }
 
   const trimmedLower = opts
     .map(o => o.trim().toLowerCase())

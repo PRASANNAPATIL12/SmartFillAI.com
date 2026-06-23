@@ -608,13 +608,16 @@ export function showUpdateOrAddPill(target: UpdateOrAddTarget): void {
 
   _activePillCallback = null;
   pel.className = 'pill learn update-or-add';
+  // Show what was filled vs what the user changed it to.
+  // "Add new" is first (prominent/default) — saves both values, new one is
+  // next-fill default. "Replace" is secondary — overwrites the stored value.
   pel.innerHTML = `
     <span class="icon">💡</span>
-    <span class="label">${escapeHtml(truncate(target.label, 18))}</span>
-    <span class="sep">·</span>
-    <span class="value">${escapeHtml(truncate(target.newValue, 10))}</span>
-    <button class="pill-btn btn-update" data-action="update">Update</button>
-    <button class="pill-btn btn-add" data-action="add">+ Add</button>
+    <span class="value old-val">${escapeHtml(truncate(target.oldValue, 9))}</span>
+    <span class="sep">→</span>
+    <span class="value new-val">${escapeHtml(truncate(target.newValue, 9))}</span>
+    <button class="pill-btn btn-add primary" data-action="add">Add new</button>
+    <button class="pill-btn btn-update" data-action="update">Replace</button>
   `;
 
   pel.querySelector('.btn-update')?.addEventListener('click', (e) => {

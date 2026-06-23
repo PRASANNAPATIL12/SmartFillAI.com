@@ -31,7 +31,7 @@ import {
   hideBanner,
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts, sweepDisconnectedGhosts } from './ghost-text';
-import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions } from './combobox';
+import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions, ensureAllDropdownsClosed } from './combobox';
 import { resolveCountry, stripCountryCode } from './country-aliases';
 import { validateLearnedValue } from './value-validation';
 import { getRememberedAnswer, rememberAnswer } from './qa-cache';
@@ -84,6 +84,14 @@ function isSensitiveDomain(hostname: string): boolean {
 let bannerDismissed = false;
 // Avoid flicker if scan re-runs many times — only show once and update the count.
 let bannerVisible = false;
+
+// ── Fill-session state ────────────────────────────────────────────────────────
+// When the user clicks "Fill", we track which elements were already in matchMap
+// at fill-start. Any MATCHED field that appears during a fill session (e.g., a
+// conditional "visa type" field after the user selects "needs sponsorship") is
+// auto-filled without requiring a second click.
+let fillSessionActive = false;
+let preFillSnapshot: Set<HTMLElement> = new Set();
 
 // ── Frame coordination ───────────────────────────────────────────────────────
 // Many forms (Greenhouse, Workday, Lever) live inside a cross-origin iframe.
@@ -393,6 +401,25 @@ async function scanFields(): Promise<void> {
     sendToBackground('CACHE_FIELD_MATCH', entry).catch(() => {});
   }
 
+  // Phase 3: auto-fill conditional fields that appeared AFTER the fill session
+  // started (e.g., "visa type" shown after "sponsorship = Yes"). Only fires
+  // during an active fill session — never auto-fills on page load.
+  if (fillSessionActive) {
+    for (const [el, state] of matchMap) {
+      if (!preFillSnapshot.has(el)
+          && state.result.status === 'MATCHED'
+          && state.entry
+          && !el.dataset.dittoFilled
+          && !(el as HTMLInputElement).disabled
+          && !(el as HTMLInputElement).readOnly) {
+        preFillSnapshot.add(el);  // prevent duplicate fill on concurrent scans
+        const value = state.entry.value;
+        const canonicalKey = state.entry.canonical_key;
+        fillElement(el, value, canonicalKey).catch(() => {});
+      }
+    }
+  }
+
   // Refresh the proactive banner based on the new scan
   refreshBanner();
 }
@@ -543,6 +570,12 @@ function triggerBannerFill(): void {
   // settle plus 2.8s of success-banner display = ~5.3s minimum.
   bannerCooldownUntil = Date.now() + 6500;
 
+  // Phase 3: snapshot elements known BEFORE the fill so scanFields() can
+  // auto-fill any NEW matched fields that appear during the session (e.g.,
+  // conditional "visa type" after selecting "needs sponsorship").
+  fillSessionActive = true;
+  preFillSnapshot = new Set(matchMap.keys());
+
   // Top frame fills its own first, then broadcasts to iframes
   requestAnimationFrame(() => {
     fillAll().then((local) => {
@@ -557,6 +590,7 @@ function triggerBannerFill(): void {
       // STEP 1.3 — wait long enough for iframe combobox fills to finish.
       // Each combobox takes up to ~560ms; 5 fields is ~2.8s; 3.5s is safe.
       pendingFillTimer = setTimeout(() => {
+        fillSessionActive = false;
         showSuccessBanner(pendingFilled);
         bannerCooldownUntil = Date.now() + 2800;
         lastBannerSig = '';
@@ -567,6 +601,7 @@ function triggerBannerFill(): void {
         setTimeout(() => { renderAggregatedBanner(); }, 2900);
       }, 3500);
     }).catch(() => {
+      fillSessionActive = false;
       showSuccessBanner(0);
       bannerCooldownUntil = Date.now() + 2800;
       lastBannerSig = '';
@@ -918,8 +953,13 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     if (isDropdown || isChoiceGroup) {
       options = (state.sig.options && state.sig.options.length) ? state.sig.options : [];
       if (options.length === 0 && isDropdown) {
-        try { options = await peekOptions(el); } catch { options = []; }
+        const PEEK_KEYWORDS = /country|state|city|gender|degree|authoriz|sponsor|experience|education|notice|period|relocat|remote|visa|employ|status|language|ethni|race|veteran|disab/i;
+        if (PEEK_KEYWORDS.test(label) || isQuestionLikeLabel(label)) {
+          try { options = await peekOptions(el); } catch { options = []; }
+          await ensureAllDropdownsClosed(el);
+        }
       }
+      if (options.length === 0 && isDropdown) continue;
     }
 
     llmCalls++;
@@ -1453,15 +1493,25 @@ function handleListboxOptionMousedown(e: MouseEvent): void {
       owner = activeAtMousedown;
     }
 
-    // Fallback: DOM search for a matchMap combobox whose listbox contains this
-    // option. Works when findListbox() can walk the DOM (react-select siblings,
-    // aria-controls). Angular Material portals appended to <body> won't match
-    // here — in that case we skip rather than risk a wrong label from the
-    // post-close activeElement.
+    // Fallback: reverse lookup via aria-owns/aria-controls on the listbox ID.
+    // Angular Material portals are appended to <body> so DOM-walk won't find
+    // them, but the trigger element references them by ID.
+    if (!owner && listbox?.id) {
+      for (const [el] of matchMap) {
+        if (isCombobox(el)
+            && (el.getAttribute('aria-owns') === listbox.id
+                || el.getAttribute('aria-controls') === listbox.id)) {
+          owner = el;
+          break;
+        }
+      }
+    }
+
+    // Fallback: DOM search for a matchMap combobox whose findListbox() resolves
+    // to this listbox (works for react-select siblings, aria-controls).
     if (!owner && listbox) {
       for (const [el] of matchMap) {
-        if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)
-            && isCombobox(el) && findListbox(el) === listbox) {
+        if (isCombobox(el) && findListbox(el) === listbox) {
           owner = el;
           break;
         }

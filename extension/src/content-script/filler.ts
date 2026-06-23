@@ -294,12 +294,34 @@ export async function fillSelect(el: HTMLSelectElement, value: string, canonical
       });
     }
 
-    // 3. Partial containment
+    // 3. First-component exact match for "City, State, Country" format.
+    // Prevents "Bangalore Rural, Karnataka" matching stored value "Bangalore":
+    // first component must equal the alias exactly.
+    if (!target) {
+      const stripEmoji = (t: string) =>
+        t.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
+      target = options.find(o => {
+        const firstComp = stripEmoji(o.text).split(',')[0].trim();
+        return firstComp === lv;
+      });
+    }
+
+    // 4. Partial containment — but guard against alias being a prefix of a
+    // larger word in the option (e.g. "bangalore" must not match "bangalore rural").
     if (!target) {
       const stripped = (t: string): string =>
         t.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim().toLowerCase();
       target =
-        options.find(o => stripped(o.text).includes(lv) || o.text.toLowerCase().includes(lv)) ??
+        options.find(o => {
+          const s = stripped(o.text);
+          if (!s.includes(lv)) return o.text.toLowerCase().includes(lv);
+          // Guard: if the alias appears at the start of a word followed by more
+          // letters (e.g. "bangalore" in "bangalore rural"), skip this option.
+          const idx = s.indexOf(lv);
+          const charAfter = s[idx + lv.length];
+          if (charAfter && /[a-z]/i.test(charAfter)) return false;
+          return true;
+        }) ??
         options.find(o => lv.includes(stripped(o.text)) && o.text.trim().length > 2);
     }
 
