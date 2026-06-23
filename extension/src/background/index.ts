@@ -61,7 +61,11 @@ import {
   updateDocumentMeta,
   saveQaEmbedding,
   getAllQaEmbeddings,
+  getFormFingerprint,
+  putFormFingerprint,
+  bumpFormFingerprintUsage,
 } from '@/storage/idb';
+import type { FormFingerprint } from '../content-script/form-fingerprinter';
 
 // ── Resume Q&A pre-generation ────────────────────────────────────────────────
 
@@ -99,15 +103,33 @@ async function ensureAlarms(): Promise<void> {
   if (!keepalive) chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 1 });
 }
 
+// ── Global network-error guard ────────────────────────────────────────────────
+// The service worker can wake up before the OS network stack is ready (e.g. on
+// browser startup after a reboot). Any fetch() inside Supabase's setSession()
+// or the sync engine may throw "TypeError: Failed to fetch". We suppress those
+// globally so Chrome's extension error page stays clean. Real logic errors
+// (non-network) still surface.
+self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+  const msg: string = (event.reason?.message ?? event.reason ?? '').toString();
+  if (
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('network unreachable') ||
+    msg.includes('Load failed')
+  ) {
+    event.preventDefault();
+  }
+});
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') {
     // Seed GROQ key from build-time env var (dev convenience; user can override in settings)
     if (ENV_GROQ_API_KEY) {
-      setAPIKey('groq', ENV_GROQ_API_KEY).then(() =>
-        setProviderConfig({ provider: 'groq', fallbackProvider: 'gemini' })
-      );
+      setAPIKey('groq', ENV_GROQ_API_KEY)
+        .then(() => setProviderConfig({ provider: 'groq', fallbackProvider: 'gemini' }))
+        .catch(() => {});
     }
     // Pre-warm embedder on first install so model is cached before first form fill
     warmUp().catch(() => {});
@@ -121,9 +143,12 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 // immediately, without waiting up to 5 minutes for the first sync alarm.
 chrome.runtime.onStartup.addListener(() => {
   ensureAlarms().catch(() => {});
-  getSettings().then(s => {
-    if (s.cloudSync) pullFromCloud().catch(() => {});
-  }).catch(() => {});
+  (async () => {
+    try {
+      const s = await getSettings();
+      if (s.cloudSync) await pullFromCloud();
+    } catch { /* network down at boot — sync alarm will retry in 5 min */ }
+  })();
 });
 
 // ── Alarm handler ─────────────────────────────────────────────────────────────
@@ -274,6 +299,26 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
   INCREMENT_CACHE_USE: async (payload) => {
     const { fingerprint } = payload as { fingerprint: string };
     await incrementCacheUse(fingerprint);
+    return { ok: true };
+  },
+
+  // ── Form fingerprint cache (Phase AD.1 — whole-form, cross-ATS) ────────────
+
+  GET_FORM_FINGERPRINT: async (payload) => {
+    const { key } = payload as { key: string };
+    const fp = await getFormFingerprint(key);
+    return fp ?? null;
+  },
+
+  LEARN_FORM_FINGERPRINT: async (payload) => {
+    const { fingerprint } = payload as { fingerprint: FormFingerprint };
+    await putFormFingerprint(fingerprint);
+    return { ok: true };
+  },
+
+  BUMP_FORM_FINGERPRINT_USE: async (payload) => {
+    const { key } = payload as { key: string };
+    await bumpFormFingerprintUsage(key);
     return { ok: true };
   },
 

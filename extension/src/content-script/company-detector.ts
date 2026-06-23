@@ -63,6 +63,69 @@ function companyFromAtsUrl(): string | null {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ATS family detection — Phase AD.1
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Returns a stable family token like "greenhouse", "workday", "lever". Used
+// by form-fingerprinter to scope fingerprints across all companies on the
+// same ATS (one Greenhouse fingerprint generalizes across all Greenhouse-
+// hosted employers because the form structure is identical).
+//
+// Unknown hosts fall back to "host:<hostname>" so fingerprints are still
+// per-domain-scoped — accuracy on uncommon portals doesn't regress.
+
+const ATS_HOST_PATTERNS: ReadonlyArray<{ id: string; rx: RegExp }> = [
+  { id: 'greenhouse',      rx: /(?:^|\.)greenhouse\.io$/ },
+  { id: 'greenhouse',      rx: /(?:^|\.)boards\.greenhouse\.io$/ },
+  { id: 'greenhouse',      rx: /(?:^|\.)job-boards\.greenhouse\.io$/ },
+  { id: 'lever',           rx: /(?:^|\.)lever\.co$/ },
+  { id: 'workable',        rx: /(?:^|\.)workable\.com$/ },
+  { id: 'ashby',           rx: /(?:^|\.)ashbyhq\.com$/ },
+  { id: 'smartrecruiters', rx: /(?:^|\.)smartrecruiters\.com$/ },
+  { id: 'jobvite',         rx: /(?:^|\.)jobvite\.com$/ },
+  { id: 'icims',           rx: /(?:^|\.)icims\.com$/ },
+];
+
+// Subdomain-style ATSes (each employer gets `<co>.ats.com`).
+const ATS_SUBDOMAIN_PATTERNS: ReadonlyArray<{ id: string; rx: RegExp }> = [
+  { id: 'workday',         rx: /\.myworkdayjobs\.com$/ },
+  { id: 'applytojob',      rx: /\.applytojob\.com$/ },
+  { id: 'bamboohr',        rx: /\.bamboohr\.com$/ },
+  { id: 'recruitee',       rx: /\.recruitee\.com$/ },
+  { id: 'breezy',          rx: /\.breezy\.hr$/ },
+  { id: 'breezy',          rx: /\.breezy\.com$/ },
+  { id: 'freshteam',       rx: /\.freshteam\.com$/ },
+];
+
+/**
+ * Stable ATS family token for fingerprinting. Pass a URL or hostname to
+ * compute against an explicit target; omit to read `location.hostname`.
+ *
+ * Returns lowercase tokens like "greenhouse", "workday", "lever", "icims",
+ * or `host:<hostname>` when no ATS family matches.
+ */
+export function getAtsId(urlOrHost?: string): string {
+  let host: string;
+  try {
+    if (urlOrHost && urlOrHost.includes('://')) {
+      host = new URL(urlOrHost).hostname.toLowerCase();
+    } else if (urlOrHost) {
+      host = urlOrHost.toLowerCase();
+    } else {
+      host = location.hostname.toLowerCase();
+    }
+  } catch {
+    return `host:${(urlOrHost ?? '').toLowerCase()}`;
+  }
+  if (!host) return 'host:';
+
+  for (const p of ATS_HOST_PATTERNS) if (p.rx.test(host)) return p.id;
+  for (const p of ATS_SUBDOMAIN_PATTERNS) if (p.rx.test(host)) return p.id;
+
+  return `host:${host}`;
+}
+
 function fromJsonLd(): string | null {
   const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
   for (const s of scripts) {

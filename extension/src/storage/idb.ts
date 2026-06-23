@@ -1,23 +1,27 @@
 /**
- * IndexedDB wrapper — three object stores:
- *   field_cache  : domain-fingerprint → FieldCacheEntry   (field match cache)
- *   embeddings   : profileEntryId     → Float32Array      (MiniLM vectors)
- *   documents    : id                 → StoredDocument     (file bytes + metadata)
+ * IndexedDB wrapper — five object stores:
+ *   field_cache       : domain-fingerprint → FieldCacheEntry  (per-field match cache)
+ *   embeddings        : profileEntryId     → Float32Array     (MiniLM vectors)
+ *   documents         : id                 → StoredDocument    (file bytes + metadata)
+ *   qa_embeddings     : normalized question → vector           (fuzzy Q→A matching)
+ *   form_fingerprints : `${atsId}::${structuralHash}` → FormFingerprint  (whole-form cache, Phase AD.1)
  *
  * Uses the raw IDBDatabase API (no extra library) because the extension
  * ships no runtime deps beyond the AI SDKs.
  */
 
 import type { FieldCacheEntry, DocumentType, StoredDocument, DocumentMeta } from '@shared/types';
+import type { FormFingerprint } from '../content-script/form-fingerprinter';
 
 export type { FieldCacheEntry };
 
 const DB_NAME = 'ditto_v1';
-const DB_VERSION = 3;
-const STORE_FIELD_CACHE    = 'field_cache';
-const STORE_EMBEDDINGS     = 'embeddings';
-const STORE_DOCUMENTS      = 'documents';
-const STORE_QA_EMBEDDINGS  = 'qa_embeddings';
+const DB_VERSION = 4;
+const STORE_FIELD_CACHE       = 'field_cache';
+const STORE_EMBEDDINGS        = 'embeddings';
+const STORE_DOCUMENTS         = 'documents';
+const STORE_QA_EMBEDDINGS     = 'qa_embeddings';
+const STORE_FORM_FINGERPRINTS = 'form_fingerprints';
 
 let _db: IDBDatabase | null = null;
 
@@ -45,6 +49,13 @@ function openDB(): Promise<IDBDatabase> {
 
       if (oldVersion < 3) {
         db.createObjectStore(STORE_QA_EMBEDDINGS, { keyPath: 'question' });
+      }
+
+      if (oldVersion < 4) {
+        const fp = db.createObjectStore(STORE_FORM_FINGERPRINTS, { keyPath: 'key' });
+        fp.createIndex('atsId',      'atsId',      { unique: false });
+        fp.createIndex('lastUsedAt', 'lastUsedAt', { unique: false });
+        fp.createIndex('useCount',   'useCount',   { unique: false });
       }
     };
 
@@ -253,4 +264,41 @@ export async function clearAllQaEmbeddings(): Promise<void> {
     req.onsuccess = () => resolve();
     req.onerror   = () => reject(req.error);
   });
+}
+
+// ── Form Fingerprints (Phase AD.1 — whole-form cache, cross-ATS) ─────────────
+
+export async function getFormFingerprint(key: string): Promise<FormFingerprint | undefined> {
+  return idbGet<FormFingerprint>(STORE_FORM_FINGERPRINTS, key);
+}
+
+export async function putFormFingerprint(fp: FormFingerprint): Promise<void> {
+  return idbPut<FormFingerprint>(STORE_FORM_FINGERPRINTS, fp);
+}
+
+export async function bumpFormFingerprintUsage(key: string): Promise<void> {
+  const existing = await getFormFingerprint(key);
+  if (!existing) return;
+  await putFormFingerprint({
+    ...existing,
+    useCount: existing.useCount + 1,
+    lastUsedAt: Date.now(),
+  });
+}
+
+export async function getAllFormFingerprints(): Promise<FormFingerprint[]> {
+  return idbGetAll<FormFingerprint>(STORE_FORM_FINGERPRINTS);
+}
+
+/** Evict fingerprints that haven't been used in `maxAgeMs` (default 180 days). */
+export async function evictStaleFormFingerprints(
+  maxAgeMs: number = 180 * 24 * 60 * 60 * 1000,
+): Promise<void> {
+  const cutoff = Date.now() - maxAgeMs;
+  const all = await getAllFormFingerprints();
+  for (const fp of all) {
+    if (fp.lastUsedAt < cutoff) {
+      await idbDelete(STORE_FORM_FINGERPRINTS, fp.key);
+    }
+  }
 }

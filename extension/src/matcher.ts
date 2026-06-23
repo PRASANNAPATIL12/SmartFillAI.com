@@ -1,20 +1,25 @@
 /**
- * Field Matcher — Waterfall Steps 1–4 (deterministic, local, zero network calls).
+ * Field Matcher — deterministic, local, zero network calls.
  *
- * Step 1: SKIP  — exclude fields we should never touch
- * Step 2: CACHE — domain+fingerprint → known match (fast path)
- * Step 3: ESSAY — detect long-form AI-generation candidates
- * Step 4: RULES — autocomplete attr → inputType → text patterns (200+ rules)
+ * Step 1   : SKIP            — exclude fields we should never touch
+ * Step 1.5 : OPTION-SET      — decisive dropdown options override label regex
+ * Step 1.6 : FORM FINGERPRINT — whole-form match across ATS family (Phase AD.1)
+ * Step 2   : FIELD CACHE     — per-domain field fingerprint → known match
+ * Step 3   : ESSAY           — detect long-form AI-generation candidates
+ * Step 4   : RULES           — autocomplete → inputType → text patterns
+ * Step 5   : EMBEDDING       — option-text semantic match (lives in fillSelect)
+ * Step 6   : LLM             — Gemini ANSWER_FIELD (lives in answer-field.ts)
  *
- * Steps 5 (embedding) and 6 (LLM batch) are added in later tasks.
- *
- * Pure function: no storage I/O, no API calls, no side effects.
+ * matchField itself is sync — async work (loading fingerprints, embeddings,
+ * LLM) happens outside and is passed in via parameters.
  */
 
 import type { DocumentType, FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry } from '@shared/types';
 import { resolveCountry } from './content-script/country-aliases';
 import { expandValueAliases, hasValueAliases } from './content-script/value-aliases';
 import { validateLearnedValue } from './content-script/value-validation';
+import type { FormFingerprint } from './content-script/form-fingerprinter';
+import { findFingerprintEntry } from './content-script/form-fingerprinter';
 
 /**
  * Find a profile entry for the given canonical_key AND validate its value
@@ -69,34 +74,47 @@ function isIncidentalNounMatch(sig: FieldSignature, canonical: string): boolean 
 /**
  * Match a single field against the user's profile.
  *
- * @param sig     Extracted field signature
- * @param profile User's profile entries
- * @param cache   Domain-level cache (empty Map is fine on first visit)
- * @param domain  Current page hostname (for cache fingerprint)
+ * @param sig         Extracted field signature
+ * @param profile     User's profile entries
+ * @param cache       Domain-level field cache (empty Map is fine on first visit)
+ * @param domain      Current page hostname (for cache fingerprint)
+ * @param fingerprint Loaded form-level fingerprint for this page, if any
+ *                    (Phase AD.1 — one fingerprint per page, applied to every field)
  */
 export function matchField(
   sig: FieldSignature,
   profile: ProfileEntry[],
   cache: Map<string, FieldCacheEntry>,
-  domain: string
+  domain: string,
+  fingerprint?: FormFingerprint,
 ): MatchResult {
   // Step 1: SKIP
   const skipReason = shouldSkip(sig);
   if (skipReason) return { status: 'SKIP', reason: skipReason };
 
-  // File upload detection (before cache — file inputs never use the field cache)
+  // File upload detection (before any cache tier — file inputs never use them)
   if (sig.inputType === 'file') return classifyFileField(sig);
 
   // Step 1.5: Option-set awareness — when the dropdown's visible options are
   // semantically decisive (only [Yes, No]; 200 country names; gender aliases;
   // degree aliases; etc.), force the canonical_key from the option set
   // INSTEAD of trusting potentially-misleading label regex matches. This
-  // runs before cache because the cache may itself carry a past mis-match
+  // runs before any cache tier because caches may carry a past mis-match
   // (e.g. yes/no field cached as country because label contained "country").
   const optionSetMatch = classifyByOptionSet(sig, profile);
   if (optionSetMatch) return optionSetMatch;
 
-  // Step 2: Cache lookup
+  // Step 1.6: Form-fingerprint cache (Phase AD.1) — whole-form match keyed
+  // by ${atsId}::${structuralHash}. When present, every field whose nameHash
+  // appears in the fingerprint's field list gets its canonical_key in an
+  // O(1) lookup. Generalizes learning across all companies on the same ATS:
+  // a fingerprint learned on Greenhouse/Databricks applies to Greenhouse/Stripe.
+  if (fingerprint) {
+    const fpMatch = fingerprintMatch(sig, fingerprint, profile);
+    if (fpMatch) return fpMatch;
+  }
+
+  // Step 2: Per-field cache lookup
   const cached = cacheMatch(sig, cache, domain);
   if (cached) {
     // Validate the cached entry still exists AND its value is structurally
@@ -210,6 +228,45 @@ function isHoneypot(el: HTMLElement): boolean {
     // getComputedStyle not available (e.g., in tests) — don't mark as honeypot
   }
   return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 1.6: Form-fingerprint match (Phase AD.1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Try to resolve a field against a previously-learned whole-form fingerprint.
+ * The fingerprint is loaded once per page (by the content-script orchestrator);
+ * each call here is a sync lookup against its in-memory field list.
+ *
+ * Returns MATCHED when the field's nameHash is present in the fingerprint AND
+ * the user has a structurally-valid profile entry for the stored canonical_key.
+ * Otherwise returns null so the waterfall continues with Step 2 (per-field
+ * cache), Step 3 (essay), Step 4 (rules) — strict fallback, no regression.
+ */
+function fingerprintMatch(
+  sig: FieldSignature,
+  fp: FormFingerprint,
+  profile: ProfileEntry[],
+): MatchResult | null {
+  const entry = findFingerprintEntry(fp, sig);
+  if (!entry || !entry.canonicalKey) return null;
+
+  // Defence-in-depth — the fingerprint guarantees a canonical_key mapping,
+  // but the profile entry for that key may be missing or its value may have
+  // been corrupted since the fingerprint was written. findDefaultEntry
+  // handles both cases (it validates the entry's shape before returning).
+  const profileEntry = findDefaultEntry(profile, entry.canonicalKey);
+  if (!profileEntry) return null;
+
+  return {
+    status: 'MATCHED',
+    profileEntryId: profileEntry.id,
+    confidence: entry.confidence,
+    reason: `fingerprint:${fp.atsId} (${entry.useCount} prior uses)`,
+    matchStep: 1,
+    alternativeCount: findAllValidEntries(profile, entry.canonicalKey).length,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

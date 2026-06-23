@@ -379,6 +379,10 @@ export type MessageType =
   | 'GET_FIELD_CACHE'
   | 'CACHE_FIELD_MATCH'
   | 'INCREMENT_CACHE_USE'
+  // Form fingerprint cache (Phase AD.1 — whole-form, cross-ATS)
+  | 'GET_FORM_FINGERPRINT'
+  | 'LEARN_FORM_FINGERPRINT'
+  | 'BUMP_FORM_FINGERPRINT_USE'
   // ML / Step 5
   | 'STEP5_MATCH'
   | 'COMPUTE_EMBEDDINGS'

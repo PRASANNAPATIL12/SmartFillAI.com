@@ -15,6 +15,13 @@ import type { DocumentMeta, ProfileEntry, FieldCacheEntry, MatchResult, FieldSig
 import { STORAGE_KEYS } from '@shared/types';
 import { extractAllFields } from './detector';
 import { matchField, fingerprint } from '@/matcher';
+import {
+  buildFingerprintInputs,
+  buildFingerprintFieldCandidate,
+  mergeFingerprint,
+  type FormFingerprint,
+  type FingerprintFieldEntry,
+} from './form-fingerprinter';
 import { fillElement, fillFileInput } from './filler';
 import { resolveHandler } from './field-handlers/registry';
 import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
@@ -377,13 +384,38 @@ async function scanFields(): Promise<void> {
 
   const fields = extractAllFields(document);
   sfaLog('scanFields detected', fields.length, 'fields, profile has', profile.length, 'entries');
+
+  // Phase AD.1 — Form-fingerprint cache. Compute the page's whole-form key
+  // from the ordered field signatures, then ask the background SW for a
+  // previously-learned fingerprint at that key. If found, every field whose
+  // nameHash appears in the fingerprint resolves at Step 1.6 (matcher) in
+  // O(1) — no regex, no embeddings, no LLM.
+  const fpInputs = buildFingerprintInputs(fields, window.location.href);
+  let formFp: FormFingerprint | null = null;
+  if (fields.length >= 3) {
+    try {
+      formFp = await sendToBackground<FormFingerprint | null>(
+        'GET_FORM_FINGERPRINT',
+        { key: fpInputs.key },
+      );
+      if (formFp) {
+        sfaLog(`fingerprint:hit ats=${fpInputs.atsId} fields=${formFp.fields.length} uses=${formFp.useCount}`);
+      } else {
+        sfaLog(`fingerprint:miss ats=${fpInputs.atsId} hash=${fpInputs.structuralHash.slice(0, 8)}`);
+      }
+    } catch {
+      // Proceed without fingerprint if background is unavailable
+    }
+  }
+
   const newCacheEntries: Array<{ fingerprint: string; profileEntryId: string; confidence: number }> = [];
+  let fingerprintHitCount = 0;
 
   for (const sig of fields) {
     const el = sig.element as HTMLElement | undefined;
     if (!el) continue;
 
-    const result = matchField(sig, profile, cache, domain);
+    const result = matchField(sig, profile, cache, domain, formFp ?? undefined);
     const entry = result.profileEntryId
       ? profile.find(e => e.id === result.profileEntryId)
       : undefined;
@@ -408,12 +440,22 @@ async function scanFields(): Promise<void> {
       const fp = fingerprint(sig, domain);
       sendToBackground('INCREMENT_CACHE_USE', { fingerprint: fp }).catch(() => {});
     }
+
+    // Track Step 1.6 fingerprint hits — bump usage counter at the end of scan.
+    if (result.matchStep === 1) fingerprintHitCount++;
   }
 
   // Fire-and-forget: save new cache entries for next visit
   for (const entry of newCacheEntries) {
     sendToBackground('CACHE_FIELD_MATCH', entry).catch(() => {});
   }
+
+  // Phase AD.1 — Persist a fingerprint learning if this page has enough
+  // signal. We learn from any scan where ≥3 fields matched at confidence ≥0.85
+  // (autocomplete tokens fire at 0.99; high-quality rules at 0.93–0.97). This
+  // gates against poisoning from accidental low-confidence guesses while
+  // still letting the user's everyday fills accumulate cross-ATS knowledge.
+  void persistFormFingerprint(fields, fpInputs, formFp, fingerprintHitCount);
 
   // Phase 3: auto-fill conditional fields that appeared after the user first
   // clicked Fill (e.g., "visa type" shown after "sponsorship = Yes", or a race
@@ -437,6 +479,66 @@ async function scanFields(): Promise<void> {
 
   // Refresh the proactive banner based on the new scan
   refreshBanner();
+}
+
+// ── Form-fingerprint persistence (Phase AD.1) ─────────────────────────────────
+
+/**
+ * Quality gate + merge for cross-form fingerprint learning. Called after
+ * every successful scan. Skips writes when the page hasn't produced enough
+ * confident signal to be worth promoting to the cross-ATS cache.
+ *
+ * Confidence rubric — we promote a field's mapping to the fingerprint when:
+ *   • autocomplete attribute drove the rule (≥0.95)
+ *   • a high-quality text-pattern rule fired (≥0.85)
+ *   • the existing field_cache already knew the mapping (≥0.90)
+ *   • the option-set tier classified the dropdown (≥0.95)
+ *   • a prior fingerprint already had the mapping (we just bump useCount)
+ *
+ * We deliberately exclude UNKNOWN, SKIP, and ESSAY results — those carry no
+ * canonical_key, and ESSAY fields are open-ended by design (always go through
+ * the LLM tier, never become fingerprint mappings).
+ */
+async function persistFormFingerprint(
+  fields: FieldSignature[],
+  inputs: ReturnType<typeof buildFingerprintInputs>,
+  existing: FormFingerprint | null,
+  fingerprintHitCount: number,
+): Promise<void> {
+  // Bump usage on a successful hit before we decide whether to also write.
+  // Even when this scan adds no new mappings, the use-count update is what
+  // keeps stale-eviction at bay.
+  if (existing && fingerprintHitCount > 0) {
+    sendToBackground('BUMP_FORM_FINGERPRINT_USE', { key: inputs.key }).catch(() => {});
+  }
+
+  // Build candidate mappings from MATCHED fields with high confidence.
+  const candidates: Array<Omit<FingerprintFieldEntry, 'learnedAt' | 'useCount'>> = [];
+  for (const sig of fields) {
+    const el = sig.element as HTMLElement | undefined;
+    if (!el) continue;
+    const state = matchMap.get(el);
+    if (!state || state.result.status !== 'MATCHED') continue;
+    if (!state.entry) continue;
+    const conf = state.result.confidence ?? 0;
+    if (conf < 0.85) continue;
+    const candidate = buildFingerprintFieldCandidate(sig, state.entry.canonical_key, conf);
+    if (candidate) candidates.push(candidate);
+  }
+
+  // Quality gate: require at least 3 high-confidence mappings on a NEW
+  // fingerprint. Existing fingerprints accept any positive signal so a
+  // single new field added to a known form propagates immediately.
+  if (!existing && candidates.length < 3) return;
+  if (candidates.length === 0) return;
+
+  const merged = mergeFingerprint(existing ?? undefined, inputs, candidates, window.location.href);
+  sendToBackground('LEARN_FORM_FINGERPRINT', { fingerprint: merged })
+    .then(() => {
+      const action = existing ? 'updated' : 'learned';
+      sfaLog(`fingerprint:${action} key=${inputs.atsId}::${inputs.structuralHash.slice(0, 8)} fields=${merged.fields.length}`);
+    })
+    .catch(() => {});
 }
 
 // ── Proactive banner (frame-aware) ────────────────────────────────────────────
