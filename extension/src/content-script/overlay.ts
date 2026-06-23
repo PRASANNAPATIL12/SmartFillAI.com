@@ -6,7 +6,7 @@
  *  - Essay panel (modal) — triggered by essay pill click, generates AI response
  */
 
-import type { MatchResult, ProfileEntry } from '@shared/types';
+import type { MatchResult, ProfileEntry, FillAction } from '@shared/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -741,5 +741,134 @@ export function hideAlternativesPanel(): void {
   if (_altsEscHandler) {
     document.removeEventListener('keydown', _altsEscHandler, true);
     _altsEscHandler = null;
+  }
+}
+
+// ── Field status badge (Phase AD.2) ───────────────────────────────────────────
+//
+// 10×10 dot anchored just outside the input's right edge, vertically centered.
+// Three colors map 1:1 to FillAction:
+//   green  (fill)   — confident match, filled silently
+//   yellow (review) — mid-confidence, filled but worth a glance
+//   grey   (flag)   — unknown / low-confidence; we did NOT fill, prompt user
+//
+// Lives inside the same Shadow DOM as the pills/banner so host-page CSS
+// can't restyle or hide it. Repositions on scroll/resize the same way ghosts
+// do. The tooltip uses the native `title` attribute — appears on hover
+// without any custom positioning logic, and is accessibility-readable.
+
+interface FieldBadgeEntry {
+  target: HTMLElement;
+  badge: HTMLElement;
+  fillAction: FillAction;
+}
+
+const _badges = new Set<FieldBadgeEntry>();
+const _badgesByTarget = new WeakMap<HTMLElement, FieldBadgeEntry>();
+let _badgeStyleEl: HTMLStyleElement | null = null;
+
+function ensureBadgeStyles(sh: ShadowRoot): void {
+  if (_badgeStyleEl && _badgeStyleEl.isConnected) return;
+  const style = document.createElement('style');
+  style.textContent = `
+    .sfa-badge {
+      position: fixed;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.85), 0 1px 3px rgba(15,23,42,0.18);
+      pointer-events: all;
+      z-index: 2147483640;
+      cursor: help;
+      transition: transform 0.1s;
+    }
+    .sfa-badge:hover { transform: scale(1.4); }
+    .sfa-badge.fill   { background: #10b981; } /* emerald-500 */
+    .sfa-badge.review { background: #f59e0b; } /* amber-500 */
+    .sfa-badge.flag   { background: #94a3b8; } /* slate-400 */
+  `;
+  sh.appendChild(style);
+  _badgeStyleEl = style;
+}
+
+/**
+ * Paint a status dot on a form field. Idempotent — calling repeatedly with
+ * different fillAction values just updates the existing dot. Pass the same
+ * target with a new fillAction to recolor (e.g., when a user heals a field
+ * and its confidence shifts from review → fill).
+ *
+ * @param tooltip Free-text shown on hover. Recommended format:
+ *                `${source}: ${canonicalKey} → ${value}`
+ */
+export function paintFieldBadge(
+  target: HTMLElement,
+  fillAction: FillAction,
+  tooltip: string = '',
+): void {
+  if (!target.isConnected) return;
+
+  const sh = ensureHost();
+  ensureBadgeStyles(sh);
+
+  const existing = _badgesByTarget.get(target);
+  if (existing) {
+    existing.badge.className = `sfa-badge ${fillAction}`;
+    existing.badge.title = tooltip;
+    existing.fillAction = fillAction;
+    positionBadge(existing);
+    return;
+  }
+
+  const badge = document.createElement('div');
+  badge.className = `sfa-badge ${fillAction}`;
+  badge.title = tooltip;
+  sh.appendChild(badge);
+
+  const entry: FieldBadgeEntry = { target, badge, fillAction };
+  _badges.add(entry);
+  _badgesByTarget.set(target, entry);
+  positionBadge(entry);
+}
+
+function positionBadge(entry: FieldBadgeEntry): void {
+  const rect = entry.target.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) {
+    // Element not yet laid out (or hidden). Keep the badge attached but
+    // park it offscreen — repositionAllBadges will catch it on the next
+    // scroll/resize tick once layout completes.
+    entry.badge.style.display = 'none';
+    return;
+  }
+  entry.badge.style.display = '';
+  // Just OUTSIDE the input's right edge, vertically centered. This keeps
+  // the dot from overlapping framework UI like Material clear-x buttons.
+  entry.badge.style.top  = `${rect.top + rect.height / 2 - 5}px`;
+  entry.badge.style.left = `${rect.right + 4}px`;
+}
+
+export function removeFieldBadge(target: HTMLElement): void {
+  const entry = _badgesByTarget.get(target);
+  if (!entry) return;
+  entry.badge.remove();
+  _badges.delete(entry);
+  _badgesByTarget.delete(target);
+}
+
+/** Called from the same scroll/resize handler that drives ghost reposition. */
+export function repositionAllBadges(): void {
+  for (const entry of _badges) {
+    if (!entry.target.isConnected || !entry.badge.isConnected) {
+      removeFieldBadge(entry.target);
+      continue;
+    }
+    positionBadge(entry);
+  }
+}
+
+/** Called from the MutationObserver sweep — cheap, no layout reads. */
+export function sweepDisconnectedBadges(): void {
+  for (const entry of _badges) {
+    if (!entry.target.isConnected || !entry.badge.isConnected) {
+      removeFieldBadge(entry.target);
+    }
   }
 }

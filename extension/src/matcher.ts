@@ -14,12 +14,54 @@
  * LLM) happens outside and is passed in via parameters.
  */
 
-import type { DocumentType, FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry } from '@shared/types';
+import type { DocumentType, FieldSignature, MatchResult, ProfileEntry, FieldCacheEntry, FillAction } from '@shared/types';
 import { resolveCountry } from './content-script/country-aliases';
 import { expandValueAliases, hasValueAliases } from './content-script/value-aliases';
 import { validateLearnedValue } from './content-script/value-validation';
 import type { FormFingerprint } from './content-script/form-fingerprinter';
 import { findFingerprintEntry } from './content-script/form-fingerprinter';
+
+/**
+ * Phase AD.2 — confidence band thresholds. Tuned so:
+ *   • Autocomplete (0.99), high-quality patterns (≥0.93), and fingerprint
+ *     replays sit in the FILL band — silent fills, green badge.
+ *   • Lower-confidence pattern matches (0.80–0.89) land in REVIEW — we fill
+ *     but flag yellow so the user can quickly correct.
+ *   • UNKNOWN and below-threshold matches go to FLAG — no fill, learn prompt.
+ */
+export const FILL_THRESHOLD = 0.90;
+export const REVIEW_THRESHOLD = 0.70;
+
+/**
+ * Derive the fill-action band from a MatchResult. Pure function; safe to call
+ * multiple times (matchField stamps it on the result, but consumers that
+ * synthesize their own MatchResults can call this directly).
+ */
+export function computeFillAction(result: MatchResult): FillAction | undefined {
+  // SKIP / ESSAY / FILE_UPLOAD bypass the regular fill path entirely.
+  if (result.status === 'SKIP') return undefined;
+  if (result.status === 'ESSAY' || result.status === 'FILE_UPLOAD') return undefined;
+
+  // UNKNOWN always flags — never fill a field whose canonical key we couldn't determine.
+  if (result.status === 'UNKNOWN') return 'flag';
+
+  // MATCHED: band by confidence.
+  const c = result.confidence ?? 0;
+  if (c >= FILL_THRESHOLD) return 'fill';
+  if (c >= REVIEW_THRESHOLD) return 'review';
+  return 'flag';
+}
+
+/**
+ * Stamp `fillAction` onto a MatchResult and return it. Used at the end of
+ * matchField so every consumer sees the band without having to call
+ * computeFillAction themselves.
+ */
+function withFillAction(result: MatchResult): MatchResult {
+  const fillAction = computeFillAction(result);
+  if (fillAction) result.fillAction = fillAction;
+  return result;
+}
 
 /**
  * Find a profile entry for the given canonical_key AND validate its value
@@ -82,6 +124,16 @@ function isIncidentalNounMatch(sig: FieldSignature, canonical: string): boolean 
  *                    (Phase AD.1 — one fingerprint per page, applied to every field)
  */
 export function matchField(
+  sig: FieldSignature,
+  profile: ProfileEntry[],
+  cache: Map<string, FieldCacheEntry>,
+  domain: string,
+  fingerprint?: FormFingerprint,
+): MatchResult {
+  return withFillAction(matchFieldInternal(sig, profile, cache, domain, fingerprint));
+}
+
+function matchFieldInternal(
   sig: FieldSignature,
   profile: ProfileEntry[],
   cache: Map<string, FieldCacheEntry>,

@@ -14,6 +14,7 @@ import {
   ensureCountryCode,
 } from '../content-script/country-aliases';
 import { validateLearnedValue } from '../content-script/value-validation';
+import { computeFillAction, FILL_THRESHOLD, REVIEW_THRESHOLD } from '../matcher';
 import { cosineSimilarity } from '../ml/embedder';
 import {
   inferCanonicalKey,
@@ -520,5 +521,62 @@ describe('Profile Store', () => {
       const all = await getAllEntries();
       expect(all.some(e => e.value === 'John')).toBe(true);
     });
+  });
+});
+
+// ── computeFillAction (Phase AD.2 — confidence bands) ─────────────────────────
+
+describe('computeFillAction', () => {
+  test('MATCHED above FILL_THRESHOLD → fill', () => {
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.99 })).toBe('fill');
+    expect(computeFillAction({ status: 'MATCHED', confidence: FILL_THRESHOLD })).toBe('fill');
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.95 })).toBe('fill');
+  });
+
+  test('MATCHED in [REVIEW, FILL) range → review', () => {
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.89 })).toBe('review');
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.80 })).toBe('review');
+    expect(computeFillAction({ status: 'MATCHED', confidence: REVIEW_THRESHOLD })).toBe('review');
+  });
+
+  test('MATCHED below REVIEW_THRESHOLD → flag', () => {
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.69 })).toBe('flag');
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0.50 })).toBe('flag');
+    expect(computeFillAction({ status: 'MATCHED', confidence: 0 })).toBe('flag');
+  });
+
+  test('MATCHED with no confidence defaults to flag', () => {
+    expect(computeFillAction({ status: 'MATCHED' })).toBe('flag');
+  });
+
+  test('UNKNOWN always flags regardless of confidence', () => {
+    expect(computeFillAction({ status: 'UNKNOWN' })).toBe('flag');
+    expect(computeFillAction({ status: 'UNKNOWN', confidence: 0.99 })).toBe('flag');
+  });
+
+  test('SKIP / ESSAY / FILE_UPLOAD bypass fillAction entirely', () => {
+    expect(computeFillAction({ status: 'SKIP' })).toBeUndefined();
+    expect(computeFillAction({ status: 'ESSAY' })).toBeUndefined();
+    expect(computeFillAction({ status: 'FILE_UPLOAD', confidence: 0.95 })).toBeUndefined();
+  });
+
+  test('matchField stamps fillAction on the returned MatchResult', () => {
+    // High-confidence rule match (autocomplete=email → 0.99) should land in fill band.
+    // Lower-bound proof that the stamping wrapper actually fires.
+    const { matchField } = require('../matcher');
+    const result = matchField(
+      {
+        label: 'Email', placeholder: '', name: 'email', id: '',
+        ariaLabel: '', autocomplete: 'email', inputType: 'text',
+        maxLength: null, surroundingText: '',
+      },
+      [{ id: '1', userId: 'u', canonical_key: 'email', display_label: '',
+         aliases: [], value: 'a@b.co', category: 'contact', source: 'manual',
+         sensitive: false, created_at: 0, updated_at: 0, use_count: 0, priority: 0 }],
+      new Map(),
+      'example.com',
+    );
+    expect(result.status).toBe('MATCHED');
+    expect(result.fillAction).toBe('fill');
   });
 });

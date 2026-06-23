@@ -116,6 +116,19 @@ export interface FieldSignature {
 
 export type MatchStatus = 'MATCHED' | 'ESSAY' | 'FILE_UPLOAD' | 'UNKNOWN' | 'SKIP';
 
+/**
+ * What the fill loop should DO with this match. Derived from confidence
+ * and status (Phase AD.2 — confidence bands):
+ *
+ *   'fill'   — confidence ≥ 0.90: fill silently, paint a green status dot
+ *   'review' — 0.70 ≤ confidence < 0.90: fill but paint a yellow review dot
+ *   'flag'   — confidence < 0.70 or UNKNOWN: do NOT fill; show learn prompt + grey dot
+ *
+ * SKIP / ESSAY / FILE_UPLOAD results don't get a fillAction (they aren't
+ * candidates for the regular fill path).
+ */
+export type FillAction = 'fill' | 'review' | 'flag';
+
 export interface MatchResult {
   /** Match status */
   status: MatchStatus;
@@ -137,6 +150,13 @@ export interface MatchResult {
 
   /** How many valid alternatives exist for this field (including the matched default) */
   alternativeCount?: number;
+
+  /**
+   * Derived action band — what the fill loop should DO with this match.
+   * Computed by matcher.computeFillAction(result). Undefined for SKIP /
+   * ESSAY / FILE_UPLOAD (these route through their own paths).
+   */
+  fillAction?: FillAction;
 }
 
 // ============================================================================

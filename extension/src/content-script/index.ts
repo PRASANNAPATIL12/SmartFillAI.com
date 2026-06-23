@@ -28,7 +28,7 @@ import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
 import { detectCompany } from './company-detector';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
-import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen } from './overlay';
+import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen, paintFieldBadge, removeFieldBadge, repositionAllBadges, sweepDisconnectedBadges } from './overlay';
 import type { EssayTarget, AlternativeEntry } from './overlay';
 import {
   showReadyBanner,
@@ -316,12 +316,12 @@ async function init(): Promise<void> {
   initLearnOverlay(handleLearnSave);
   initEssayOverlay(handleEssayOpen);
 
-  // When the user scrolls or resizes, ghost overlays must track their inputs.
-  // repositionAllGhosts() now repositions existing ghosts in place instead of
-  // wiping them — fixes the flakiness where the old wipe-then-rescan approach
-  // lost ghosts whenever the rescan got cancelled by ongoing DOM mutations.
+  // When the user scrolls or resizes, ghost overlays and status badges must
+  // track their inputs. Both modules expose reposition-in-place helpers so we
+  // don't wipe-and-rescan (which loses overlays mid-scroll).
   const onReposition = (): void => {
     repositionAllGhosts();
+    repositionAllBadges();
   };
   window.addEventListener('scroll', onReposition, { passive: true });
   window.addEventListener('resize', onReposition);
@@ -461,10 +461,15 @@ async function scanFields(): Promise<void> {
   // clicked Fill (e.g., "visa type" shown after "sponsorship = Yes", or a race
   // dropdown revealed after selecting "No" for Hispanic/Latino). Fires whenever
   // hasFilled is true — not limited to the 3.5s fill-session window.
+  //
+  // Phase AD.2 — fillAction gate: 'flag' band fields are NEVER auto-filled.
+  // Low-confidence matches need user confirmation; auto-filling them silently
+  // is the exact failure mode that destroys trust.
   if (hasFilled) {
     for (const [el, state] of matchMap) {
       if (!preFillSnapshot.has(el)
           && state.result.status === 'MATCHED'
+          && state.result.fillAction !== 'flag'
           && state.entry
           && !el.dataset.dittoFilled
           && !(el as HTMLInputElement).disabled
@@ -942,6 +947,15 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       continue;
     }
 
+    // Phase AD.2 — confidence band gate. fillAction === 'flag' means the
+    // match exists but its confidence is below REVIEW_THRESHOLD (0.70). We
+    // don't fill these — the user gets a grey status badge and the learn
+    // pill so they can correct/teach instead.
+    if (state.result.fillAction === 'flag') {
+      skipped++;
+      continue;
+    }
+
     const ok = await fillElement(
       el,
       resolvePhoneValue(state.entry.value, state.entry.canonical_key),
@@ -951,6 +965,11 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     if (ok) {
       filled++;
       removeGhost(el);
+      // Phase AD.2 — paint the status badge as soon as fill succeeds (don't
+      // wait for the next scan). Picks 'fill' or 'review' based on the
+      // confidence band that produced the match.
+      const badgeAction = state.result.fillAction === 'review' ? 'review' : 'fill';
+      paintFieldBadge(el, badgeAction, describeMatchForBadge(state.result, state.entry));
       // Fire-and-forget — use count update is best-effort
       sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});
     } else {
@@ -1266,6 +1285,55 @@ function applyHint(
   } else if (result.status === 'UNKNOWN') {
     attachLearnListeners(el);
   }
+
+  // Phase AD.2 — per-field status badge.
+  //   • fill   (green)  — painted after a successful fill (dittoFilled present)
+  //   • review (yellow) — painted after fill on mid-confidence MATCHED fields
+  //   • flag   (grey)   — painted IMMEDIATELY on UNKNOWN / below-threshold fields
+  //                       (no fill happens for these — the badge signals
+  //                       "we saw it but can't fill it; please type in")
+  // SKIP / ESSAY / FILE_UPLOAD don't get a status dot (they have their own UI).
+  paintBadgeForField(el, result, entry);
+}
+
+/**
+ * Phase AD.2 — paint the green/yellow/grey status dot based on fillAction.
+ * Idempotent: calling repeatedly with the same arguments is cheap (overlay
+ * deduplicates internally). Removes the badge when the field doesn't qualify.
+ */
+function paintBadgeForField(
+  el: HTMLElement,
+  result: MatchResult,
+  entry?: ProfileEntry,
+): void {
+  const action = result.fillAction;
+  if (!action) {
+    removeFieldBadge(el);
+    return;
+  }
+  // 'flag' is painted regardless of fill state — that's the whole point of
+  // the band (we couldn't act, so mark the field grey for the user).
+  if (action === 'flag') {
+    paintFieldBadge(el, 'flag', describeMatchForBadge(result, entry));
+    return;
+  }
+  // 'fill' / 'review' only earn a badge AFTER the field is actually filled.
+  // Until then the ghost-text preview still shows what we'd fill — the badge
+  // would compete with it visually.
+  const filled = el.dataset.dittoFilled === 'true';
+  if (filled) {
+    paintFieldBadge(el, action, describeMatchForBadge(result, entry));
+  } else {
+    removeFieldBadge(el);
+  }
+}
+
+/** Build the badge tooltip — "source: canonicalKey → value" (masked if sensitive). */
+function describeMatchForBadge(result: MatchResult, entry?: ProfileEntry): string {
+  const source = result.reason ?? `step ${result.matchStep ?? '?'}`;
+  if (!entry) return source;
+  const value = entry.sensitive ? '•••••' : (entry.value.length > 60 ? entry.value.slice(0, 57) + '…' : entry.value);
+  return `${source}: ${entry.canonical_key} → ${value}`;
 }
 
 function attachPillListeners(el: HTMLElement, entry: ProfileEntry, result: MatchResult): void {
@@ -2038,9 +2106,11 @@ function scheduleScan(): void {
 }
 
 const observer = new MutationObserver(() => {
-  // Immediately remove ghost text for any field that was just removed from the
-  // DOM (e.g. a login modal closed). No layout reads, so this is cheap.
+  // Immediately remove ghost text and status badges for any field that was
+  // just removed from the DOM (e.g. a login modal closed). No layout reads,
+  // so this is cheap.
   sweepDisconnectedGhosts();
+  sweepDisconnectedBadges();
   scheduleScan();
 });
 
