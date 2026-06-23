@@ -190,6 +190,8 @@ describe('mergeFingerprint', () => {
     structuralHash: 'deadbeef',
     key: 'greenhouse::deadbeef',
     fieldCount: 3,
+    // AE.1 — buildFingerprintInputs now includes the AtsDetection.
+    detection: { atsId: 'greenhouse', confidence: 1.0, method: 'direct_hostname' as const },
   };
 
   test('first-write creates a fingerprint from candidates with useCount=1', () => {

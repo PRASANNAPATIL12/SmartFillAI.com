@@ -28,7 +28,8 @@
 
 import type { FieldSignature } from '@shared/types';
 import { djb2 } from '../matcher';
-import { getAtsId } from './company-detector';
+import { detectAts } from './company-detector';
+import type { AtsDetection } from './company-detector';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Field-signature reduction
@@ -147,23 +148,27 @@ export function computeFingerprintKey(atsId: string, structuralHash: string): st
 /**
  * One-shot helper for callers that have the live page available. Returns
  * the full key plus the inputs that built it (handy for logging / debugging
- * fingerprint misses).
+ * fingerprint misses). `detection` carries the method + confidence used to
+ * arrive at atsId, so debug logs can surface "ats=greenhouse via=query_param".
  */
 export interface FingerprintInputs {
   atsId: string;
   structuralHash: string;
   key: string;
   fieldCount: number;
+  detection: AtsDetection;
 }
 
 export function buildFingerprintInputs(fields: FieldSignature[], url?: string): FingerprintInputs {
-  const atsId = getAtsId(url);
+  const doc = typeof document !== 'undefined' ? document : undefined;
+  const detection = detectAts(url, doc);
   const structuralHash = computeStructuralHash(fields);
   return {
-    atsId,
+    atsId: detection.atsId,
     structuralHash,
-    key: computeFingerprintKey(atsId, structuralHash),
+    key: computeFingerprintKey(detection.atsId, structuralHash),
     fieldCount: fields.length,
+    detection,
   };
 }
 

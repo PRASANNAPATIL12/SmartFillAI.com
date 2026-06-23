@@ -25,7 +25,7 @@ import {
 import { fillElement, fillFileInput } from './filler';
 import { resolveHandler } from './field-handlers/registry';
 import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
-import { detectCompany } from './company-detector';
+import { detectCompany, invalidateAtsCache } from './company-detector';
 import { sendToBackground } from './messenger';
 import { fieldEmbedText } from '@/ml/step5';
 import { initOverlay, initLearnOverlay, initEssayOverlay, showPill, showLearnPill, schedulePillHide, showEssayPanel, showUpdateOrAddPill, showAlternativesPanel, hideAlternativesPanel, isAlternativesPanelOpen, paintFieldBadge, removeFieldBadge, repositionAllBadges, sweepDisconnectedBadges } from './overlay';
@@ -399,9 +399,9 @@ async function scanFields(): Promise<void> {
         { key: fpInputs.key },
       );
       if (formFp) {
-        sfaLog(`fingerprint:hit ats=${fpInputs.atsId} fields=${formFp.fields.length} uses=${formFp.useCount}`);
+        sfaLog(`fingerprint:hit ats=${fpInputs.atsId} via=${fpInputs.detection.method} fields=${formFp.fields.length} uses=${formFp.useCount}`);
       } else {
-        sfaLog(`fingerprint:miss ats=${fpInputs.atsId} hash=${fpInputs.structuralHash.slice(0, 8)}`);
+        sfaLog(`fingerprint:miss ats=${fpInputs.atsId} via=${fpInputs.detection.method} hash=${fpInputs.structuralHash.slice(0, 8)}`);
       }
     } catch {
       // Proceed without fingerprint if background is unavailable
@@ -2105,12 +2105,39 @@ function scheduleScan(): void {
   }
 }
 
-const observer = new MutationObserver(() => {
+/**
+ * Phase AE.1 — true when a mutation batch added any <iframe>, <script>, or
+ * element that looks like an ATS-application root. Used to bust the cached
+ * ATS detection so SPA pages that lazy-mount their application iframe (or
+ * inject the Greenhouse `boards.js` after initial render) get re-detected.
+ *
+ * Cheap structural check — no descendant walks, no layout reads.
+ */
+function mutationAffectsAtsDetection(records: MutationRecord[]): boolean {
+  for (const record of records) {
+    for (const node of Array.from(record.addedNodes)) {
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      const el = node as Element;
+      const tag = el.tagName;
+      if (tag === 'IFRAME' || tag === 'SCRIPT') return true;
+      // Greenhouse-style application root (and a few other ATS-specific IDs)
+      // can show up as a wrapping <div> with no script/iframe in the same batch.
+      if (el.id === 'greenhouse_application' || el.id === 'grnhse_app') return true;
+    }
+  }
+  return false;
+}
+
+const observer = new MutationObserver((records) => {
   // Immediately remove ghost text and status badges for any field that was
   // just removed from the DOM (e.g. a login modal closed). No layout reads,
   // so this is cheap.
   sweepDisconnectedGhosts();
   sweepDisconnectedBadges();
+  // Phase AE.1 — bust the ATS detection cache when iframes/scripts arrive
+  // late. The next scanFields() then re-runs detectAts and may upgrade from
+  // hostname-fallback to greenhouse/workday/etc.
+  if (mutationAffectsAtsDetection(records)) invalidateAtsCache();
   scheduleScan();
 });
 

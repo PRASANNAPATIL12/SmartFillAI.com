@@ -64,7 +64,7 @@ function companyFromAtsUrl(): string | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ATS family detection — Phase AD.1
+// ATS family detection — Phase AD.1 (direct hostname) + AE.1 (embedded)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Returns a stable family token like "greenhouse", "workday", "lever". Used
@@ -72,8 +72,18 @@ function companyFromAtsUrl(): string | null {
 // same ATS (one Greenhouse fingerprint generalizes across all Greenhouse-
 // hosted employers because the form structure is identical).
 //
-// Unknown hosts fall back to "host:<hostname>" so fingerprints are still
-// per-domain-scoped — accuracy on uncommon portals doesn't regress.
+// Detection priority (first confident match wins):
+//   1. Direct hostname     (confidence 1.0)  — boards.greenhouse.io, jobs.lever.co
+//   2. Query-param signal  (0.95)            — ?gh_jid=, ?lever_source=, ?iis=
+//   3. Iframe src           (0.95)            — <iframe src="...greenhouse.io...">
+//   4. Form action URL      (0.90)            — <form action="...greenhouse.io...">
+//   5. Script src           (0.90)            — <script src="boards-api.greenhouse.io">
+//   6. DOM signature        (0.85)            — #greenhouse_application, [data-automation-id]
+//   7. Hostname fallback    (0.30)            — host:<hostname>
+//
+// Layers 2–6 catch the common case where a large company embeds an ATS form
+// on their own domain (databricks.com runs Greenhouse, stripe.com runs
+// Greenhouse, etc) — the Databricks failure we hit in real testing.
 
 const ATS_HOST_PATTERNS: ReadonlyArray<{ id: string; rx: RegExp }> = [
   { id: 'greenhouse',      rx: /(?:^|\.)greenhouse\.io$/ },
@@ -99,31 +109,243 @@ const ATS_SUBDOMAIN_PATTERNS: ReadonlyArray<{ id: string; rx: RegExp }> = [
 ];
 
 /**
- * Stable ATS family token for fingerprinting. Pass a URL or hostname to
- * compute against an explicit target; omit to read `location.hostname`.
+ * Query parameters that uniquely identify an embedded ATS. Conservative list
+ * — only include params with a near-zero false-positive rate. `gh_jid` is the
+ * Greenhouse job ID, `lever_source` is Lever's referral tracker, etc.
+ */
+const ATS_QUERY_PARAMS: ReadonlyArray<{ param: string; atsId: string }> = [
+  { param: 'gh_jid',        atsId: 'greenhouse' },
+  { param: 'gh_src',        atsId: 'greenhouse' },
+  { param: 'gh_token',      atsId: 'greenhouse' },
+  { param: 'lever_source',  atsId: 'lever' },
+  { param: 'lever_origin',  atsId: 'lever' },
+  { param: 'iis',           atsId: 'icims' },
+  { param: 'in_iframe',     atsId: 'icims' },
+];
+
+/**
+ * URL substrings appearing in script srcs / form actions / iframe srcs that
+ * uniquely identify the underlying ATS even when the parent page is on a
+ * company-owned domain. Subset matches against full URL.
+ */
+const ATS_URL_SUBSTRINGS: ReadonlyArray<{ substring: string; atsId: string }> = [
+  { substring: 'boards.greenhouse.io',     atsId: 'greenhouse' },
+  { substring: 'boards-api.greenhouse.io', atsId: 'greenhouse' },
+  { substring: 'app.greenhouse.io',        atsId: 'greenhouse' },
+  { substring: 'job-boards.greenhouse.io', atsId: 'greenhouse' },
+  { substring: 'jobs.lever.co',            atsId: 'lever' },
+  { substring: 'myworkday.com',            atsId: 'workday' },
+  { substring: 'myworkdayjobs.com',        atsId: 'workday' },
+  { substring: 'smartrecruiters.com',      atsId: 'smartrecruiters' },
+  { substring: 'icims.com',                atsId: 'icims' },
+  { substring: 'ashbyhq.com',              atsId: 'ashby' },
+  { substring: 'workable.com',             atsId: 'workable' },
+];
+
+/**
+ * CSS selectors that uniquely identify an ATS's rendered form. Found on the
+ * parent page even when the form itself is in an iframe. Use ATS-specific IDs
+ * and data attributes only — generic class names like `.form` are excluded.
+ */
+const ATS_DOM_SIGNATURES: ReadonlyArray<{ selector: string; atsId: string }> = [
+  { selector: '#greenhouse_application',         atsId: 'greenhouse' },
+  { selector: '#grnhse_app',                     atsId: 'greenhouse' },
+  { selector: 'iframe#grnhse_iframe',            atsId: 'greenhouse' },
+  { selector: '[data-greenhouse]',               atsId: 'greenhouse' },
+  { selector: '[data-automation-id]',            atsId: 'workday' },
+  { selector: '[data-automation-widget]',        atsId: 'workday' },
+  { selector: '.lever-application-form',         atsId: 'lever' },
+  { selector: 'form[data-qa="application-form"]', atsId: 'lever' },
+  { selector: '[data-ashby-job-posting-id]',     atsId: 'ashby' },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AtsDetection {
+  atsId: string;       // "greenhouse" | "workday" | … | "host:<hostname>"
+  confidence: number;  // 1.0 (direct) → 0.30 (fallback)
+  method:
+    | 'direct_hostname'
+    | 'query_param'
+    | 'iframe'
+    | 'form_action'
+    | 'script_src'
+    | 'dom_signature'
+    | 'hostname_fallback';
+}
+
+// Cache the result per page load. Sub-0.85 detections aren't cached so a
+// MutationObserver tick can pick up late-injected iframes/scripts.
+let _atsDetectionCache: AtsDetection | null = null;
+
+/**
+ * Detect the underlying ATS family for the current page. Pass an explicit URL
+ * and Document for testing; both default to the live page context.
  *
- * Returns lowercase tokens like "greenhouse", "workday", "lever", "icims",
- * or `host:<hostname>` when no ATS family matches.
+ * Returns the highest-confidence detection from the 7 layers.
+ */
+export function detectAts(url?: string, doc?: Document): AtsDetection {
+  if (_atsDetectionCache && _atsDetectionCache.confidence >= 0.85) {
+    return _atsDetectionCache;
+  }
+  const result = resolveAtsDetection(url, doc);
+  if (result.confidence >= 0.85) {
+    _atsDetectionCache = result;
+  }
+  return result;
+}
+
+/**
+ * Bust the cached detection so the next detectAts() call re-runs every layer.
+ * Called from the content-script's MutationObserver when new iframe or script
+ * tags appear — late-injected ATS scripts then get picked up on the next scan.
+ */
+export function invalidateAtsCache(): void {
+  _atsDetectionCache = null;
+}
+
+/**
+ * Backward-compatible wrapper — returns just the atsId token. New callers
+ * should prefer detectAts() so they can log the detection method.
  */
 export function getAtsId(urlOrHost?: string): string {
-  let host: string;
+  const docArg = typeof document !== 'undefined' ? document : undefined;
+  return detectAts(urlOrHost, docArg).atsId;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detection layers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function resolveAtsDetection(url?: string, doc?: Document): AtsDetection {
+  const host = resolveHost(url);
+
+  // Layer 1 — direct hostname (existing AD.1 logic)
+  const direct = atsFromHostname(host);
+  if (direct) {
+    return { atsId: direct, confidence: 1.0, method: 'direct_hostname' };
+  }
+
+  // Layer 2 — query parameter signature
+  const fromQuery = detectFromQueryParams(url);
+  if (fromQuery) {
+    return { atsId: fromQuery, confidence: 0.95, method: 'query_param' };
+  }
+
+  // Layers 3–6 require a Document
+  if (doc) {
+    const fromIframe = detectFromIframes(doc);
+    if (fromIframe) return { atsId: fromIframe, confidence: 0.95, method: 'iframe' };
+
+    const fromFormAction = detectFromFormActions(doc);
+    if (fromFormAction) return { atsId: fromFormAction, confidence: 0.90, method: 'form_action' };
+
+    const fromScript = detectFromScripts(doc);
+    if (fromScript) return { atsId: fromScript, confidence: 0.90, method: 'script_src' };
+
+    const fromDom = detectFromDomSignatures(doc);
+    if (fromDom) return { atsId: fromDom, confidence: 0.85, method: 'dom_signature' };
+  }
+
+  // Layer 7 — hostname fallback
+  return { atsId: `host:${host}`, confidence: 0.3, method: 'hostname_fallback' };
+}
+
+function resolveHost(urlOrHost?: string): string {
   try {
     if (urlOrHost && urlOrHost.includes('://')) {
-      host = new URL(urlOrHost).hostname.toLowerCase();
-    } else if (urlOrHost) {
-      host = urlOrHost.toLowerCase();
-    } else {
-      host = location.hostname.toLowerCase();
+      return new URL(urlOrHost).hostname.toLowerCase();
     }
-  } catch {
-    return `host:${(urlOrHost ?? '').toLowerCase()}`;
-  }
-  if (!host) return 'host:';
+    if (urlOrHost) return urlOrHost.toLowerCase();
+    if (typeof location !== 'undefined') return location.hostname.toLowerCase();
+  } catch { /* fall through */ }
+  return '';
+}
 
+/** Match a hostname against the direct ATS host/subdomain patterns. */
+function atsFromHostname(host: string): string | null {
+  if (!host) return null;
   for (const p of ATS_HOST_PATTERNS) if (p.rx.test(host)) return p.id;
   for (const p of ATS_SUBDOMAIN_PATTERNS) if (p.rx.test(host)) return p.id;
+  return null;
+}
 
-  return `host:${host}`;
+function detectFromQueryParams(url?: string): string | null {
+  const target = url ?? (typeof location !== 'undefined' ? location.href : '');
+  if (!target) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URL(target, 'http://localhost').searchParams;
+  } catch { return null; }
+  for (const sig of ATS_QUERY_PARAMS) {
+    if (params.has(sig.param)) return sig.atsId;
+  }
+  return null;
+}
+
+function detectFromIframes(doc: Document): string | null {
+  let iframes: NodeListOf<HTMLIFrameElement>;
+  try {
+    iframes = doc.querySelectorAll('iframe');
+  } catch { return null; }
+  const baseHref = (() => {
+    try { return (doc as unknown as { location?: Location }).location?.href ?? 'http://localhost'; }
+    catch { return 'http://localhost'; }
+  })();
+  for (const iframe of Array.from(iframes)) {
+    const src = iframe.getAttribute('src') || iframe.getAttribute('data-src') || '';
+    if (!src) continue;
+    let host = '';
+    try { host = new URL(src, baseHref).hostname.toLowerCase(); } catch { continue; }
+    const hit = atsFromHostname(host);
+    if (hit) return hit;
+    // Also accept URL-substring match for paths like data-src="/embed/greenhouse"
+    for (const sig of ATS_URL_SUBSTRINGS) {
+      if (src.toLowerCase().includes(sig.substring)) return sig.atsId;
+    }
+  }
+  return null;
+}
+
+function detectFromFormActions(doc: Document): string | null {
+  let forms: NodeListOf<HTMLFormElement>;
+  try {
+    forms = doc.querySelectorAll('form[action]');
+  } catch { return null; }
+  for (const form of Array.from(forms)) {
+    const action = (form.getAttribute('action') || '').toLowerCase();
+    if (!action) continue;
+    for (const sig of ATS_URL_SUBSTRINGS) {
+      if (action.includes(sig.substring)) return sig.atsId;
+    }
+  }
+  return null;
+}
+
+function detectFromScripts(doc: Document): string | null {
+  let scripts: NodeListOf<HTMLScriptElement>;
+  try {
+    scripts = doc.querySelectorAll('script[src]');
+  } catch { return null; }
+  for (const script of Array.from(scripts)) {
+    const src = (script.getAttribute('src') || '').toLowerCase();
+    if (!src) continue;
+    for (const sig of ATS_URL_SUBSTRINGS) {
+      if (src.includes(sig.substring)) return sig.atsId;
+    }
+  }
+  return null;
+}
+
+function detectFromDomSignatures(doc: Document): string | null {
+  for (const sig of ATS_DOM_SIGNATURES) {
+    try {
+      if (doc.querySelector(sig.selector)) return sig.atsId;
+    } catch { continue; }
+  }
+  return null;
 }
 
 function fromJsonLd(): string | null {
