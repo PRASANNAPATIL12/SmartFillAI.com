@@ -1398,6 +1398,17 @@ function tryLearnField(el: HTMLElement): void {
  *   "John Smith",    key="first_name"            → "John Smith"
  */
 function normalizeLearnedValue(value: string, canonicalKey: string): string {
+  // Strip visual formatting from phone numbers — spaces, parens, dashes — so
+  // the profile always stores clean digits. Preserves a leading "+" for E.164.
+  // This prevents format-cycling where "(944) 867-7888" and "9448677888" bounce
+  // back and forth as the form re-formats whatever we filled.
+  if (canonicalKey === 'phone_number') {
+    const trimmed = value.trim();
+    const hasPlus = trimmed.startsWith('+');
+    const digits = trimmed.replace(/\D/g, '');
+    if (digits.length >= 7) return hasPlus ? `+${digits}` : digits;
+    return value;
+  }
   if (canonicalKey !== 'country' && canonicalKey !== 'phone_country_code') return value;
   let v = value.trim();
   v = v.replace(/^[\u{1F1E0}-\u{1F1FF}]{2}\s*/u, '').trim();  // strip flag emoji

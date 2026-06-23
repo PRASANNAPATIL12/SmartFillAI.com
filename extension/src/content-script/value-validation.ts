@@ -22,7 +22,10 @@ import { expandValueAliases, hasValueAliases } from './value-aliases';
 
 /** Shape validators per canonical_key. Returning true means the value is structurally sane. */
 const VALIDATORS: Record<string, (value: string) => boolean> = {
-  phone_country_code: v => /^\+?\d{1,4}$/.test(v.trim()),
+  // Accept both raw calling codes ("+91", "91") AND country names ("India").
+  // The normalizer converts picker labels like "🇮🇳 India +91" → "India" before
+  // this validator runs, so the digit-only check alone would reject every name.
+  phone_country_code: v => /^\+?\d{1,4}$/.test(v.trim()) || resolveCountry(v.trim()) !== null,
   // A country entry must be a NAME (or ISO code), never a bare calling code.
   // "+1"/"+91" here means the widget's collapsed display was mis-captured —
   // reject so it heals away and gets re-learned from the clicked option text.

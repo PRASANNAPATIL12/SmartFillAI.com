@@ -109,10 +109,16 @@ export function fillPlainInput(el: HTMLInputElement | HTMLTextAreaElement, value
   // so we can see in the console and react accordingly.
   const after = (el as HTMLInputElement).value ?? '';
   if (after !== value) {
-    const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
-    console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
-    // If reverted, we still return true because we did our best. The
-    // ghost-removal still happens. User can retry.
+    // Suppress false-positive for tel inputs: a phone widget may reformat our
+    // value ("9448677888" → "(944) 867-7888") while the fill itself succeeded.
+    // Only warn when the actual digits differ — that's a real mismatch.
+    const isTelReformat = el instanceof HTMLInputElement && el.type === 'tel'
+      && after.replace(/\D/g, '') === value.replace(/\D/g, '')
+      && after.replace(/\D/g, '').length >= 5;
+    if (!isTelReformat) {
+      const label = el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '?';
+      console.warn(`[SmartFillAI] fill mismatch — "${label}" before="${before}" after="${after}" expected="${value}"`);
+    }
   }
 
   return true;
