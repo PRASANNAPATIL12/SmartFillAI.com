@@ -36,7 +36,11 @@ const VALIDATORS: Record<string, (value: string) => boolean> = {
   website_url:        v => /^https?:\/\/\S{3,}$/i.test(v.trim()) || /^[\w-]+\.[\w./-]+$/i.test(v.trim()),
   linkedin_url:       v => /linkedin\.com/i.test(v) || /^[\w-]{3,}$/i.test(v.trim()),
   github_url:         v => /github\.com/i.test(v)   || /^[\w-]{3,}$/i.test(v.trim()),
-  date_of_birth:      v => /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(v.trim()) || /^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(v.trim()),
+  // Date fields — capture() normalizes to ISO before saving, so validators only accept ISO
+  date_of_birth:      v => /^\d{4}-\d{2}-\d{2}$/.test(v.trim()),
+  joining_date:       v => /^\d{4}-\d{2}(-\d{2})?$/.test(v.trim()),
+  start_date:         v => /^\d{4}-\d{2}(-\d{2})?$/.test(v.trim()),
+  graduation_date:    v => /^\d{4}-\d{2}(-\d{2})?$/.test(v.trim()),
   graduation_year:    v => /^(19|20)\d{2}$/.test(v.trim()),
   gpa:                v => {
     const n = Number(v.trim());

@@ -376,6 +376,10 @@ const RULES: Rule[] = [
   // ── Identity ─────────────────────────────────────────────────────────────────
   { canonical: 'date_of_birth', confidence: 0.97, reason: 'pattern: date of birth',
     pattern: /date.?of.?birth|birth.?date|\bdob\b|\bbirthday\b|born.?on/i },
+  { canonical: 'joining_date',  confidence: 0.93, reason: 'pattern: joining date',
+    pattern: /joining.?date|date.?of.?joining|expected.?joining|join.?by/i },
+  { canonical: 'graduation_date', confidence: 0.90, reason: 'pattern: graduation date',
+    pattern: /graduation.?date|date.?of.?graduation|pass.?out.?year|course.?end.?date/i },
   { canonical: 'gender', confidence: 0.94, reason: 'pattern: gender',
     pattern: /\bgender\b/i,
     negativePattern: /non.?binary|preference/i },

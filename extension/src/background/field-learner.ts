@@ -1,4 +1,5 @@
 import type { FieldSignature } from '@shared/types';
+import { toISODate } from '@shared/date-utils';
 
 export type SerializableFieldSig = Omit<FieldSignature, 'element'>;
 
@@ -25,6 +26,9 @@ const AUTOCOMPLETE_MAP: Record<string, string> = {
   'country-name':        'country',
   'tel-country-code':    'phone_country_code',
   'bday':            'date_of_birth',
+  'bday-day':        'date_of_birth',
+  'bday-month':      'date_of_birth',
+  'bday-year':       'date_of_birth',
   'url':             'website',
   'username':        'username',
   'nickname':        'username',
@@ -67,6 +71,8 @@ const TEXT_PATTERNS: Array<[RegExp, string]> = [
   [/\bgithub\b/i,                                           'github_url'],
   [/\btwitter\b|\bx\.com\b/i,                              'twitter_handle'],
   [/\bwebsite\b|\bportfolio\b|\bhomepage\b/i,              'website'],
+  [/joining.?date|date.?of.?joining/i,       'joining_date'],
+  [/graduation.?date|date.?of.?graduation/i, 'graduation_date'],
   [/\bdate.?of.?birth\b|\bbirth.?date\b|\bdob\b|\bbirthday\b/i, 'date_of_birth'],
   [/\bgpa\b/i,                                              'gpa'],
   [/\buniversity\b|\bcollege\b|\binstitution\b/i,           'university'],
@@ -86,6 +92,7 @@ const CATEGORY_MAP: Record<string, string> = {
   current_location: 'work', preferred_location: 'work', visa_type: 'work',
   first_name: 'identity', last_name: 'identity', full_name: 'identity',
   middle_name: 'identity', date_of_birth: 'identity', gender: 'identity',
+  joining_date: 'work', start_date: 'work', graduation_date: 'education',
   prefix: 'identity', suffix: 'identity',
   university: 'education', degree: 'education', gpa: 'education',
   company: 'work', current_company: 'work', job_title: 'work',
@@ -159,7 +166,17 @@ const COUNTRY_NAMES: string[] = [
  *   "+91"          → "+91"  (raw calling codes kept as-is)
  *   "United States" → "United States"
  */
+const DATE_CANONICAL_KEYS = new Set([
+  'date_of_birth', 'joining_date', 'start_date', 'graduation_date',
+]);
+
 export function normalizeFieldValue(canonicalKey: string, value: string): string {
+  // Normalize date fields to ISO 8601 before storing
+  if (DATE_CANONICAL_KEYS.has(canonicalKey)) {
+    const iso = toISODate(value.trim());
+    return iso ?? value;
+  }
+
   if (canonicalKey !== 'country' && canonicalKey !== 'phone_country_code') return value;
 
   let v = value.trim();
