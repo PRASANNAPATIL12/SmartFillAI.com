@@ -32,7 +32,7 @@ import {
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts, sweepDisconnectedGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions, ensureAllDropdownsClosed } from './combobox';
-import { resolveCountry, stripCountryCode } from './country-aliases';
+import { resolveCountry, stripCountryCode, ensureCountryCode } from './country-aliases';
 import { validateLearnedValue } from './value-validation';
 import { getRememberedAnswer, rememberAnswer } from './qa-cache';
 
@@ -52,19 +52,33 @@ let profileLoaded = false;
 let scanTimer:    ReturnType<typeof setTimeout> | undefined;
 let maxScanTimer: ReturnType<typeof setTimeout> | undefined;
 
-// When the page has a separate phone_country_code field, the phone_number
-// input expects only the local number. Scanning matchMap for a sibling
-// country-code field tells us whether to strip the prefix at fill time.
+// Resolve the value to fill into a phone_number field.
+//
+// Two layouts need different treatment:
+//   UNIFIED widget  — a <button> flag picker sits next to the tel input; the
+//     input accepts and displays the full number including the calling code
+//     ("+91 9448677888"). Fill with E.164 so the widget derives the country
+//     from the "+" prefix rather than greedily matching the first digits of
+//     the local number (e.g. "94…" → Sri Lanka instead of India).
+//
+//   SPLIT layout    — a native <select> holds the country; the tel input
+//     holds only the national number. Fill with the stripped local number.
+//
+// If no phone_country_code sibling exists, return the stored value as-is.
 function resolvePhoneValue(storedValue: string, canonicalKey: string): string {
   if (canonicalKey !== 'phone_number') return storedValue;
   let countryValue: string | null = null;
-  for (const [, s] of matchMap) {
+  let pickerIsButton = false;
+  for (const [countryEl, s] of matchMap) {
     if (s.entry?.canonical_key === 'phone_country_code') {
       countryValue = s.entry.value;
+      pickerIsButton = countryEl instanceof HTMLButtonElement ||
+        countryEl.getAttribute('role') === 'button';
       break;
     }
   }
   if (!countryValue) return storedValue;
+  if (pickerIsButton) return ensureCountryCode(storedValue, countryValue);
   return stripCountryCode(storedValue, countryValue);
 }
 let documentsMeta: DocumentMeta[] = [];
