@@ -1,7 +1,10 @@
 // STEP 7.6 — Debug logging gate. Set window.__SFA_DEBUG = true in DevTools
-// to opt into verbose logging. Default off so users don't see the noise.
-const SFA_DEBUG = (window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true;
-const sfaLog = (...args: unknown[]): void => { if (SFA_DEBUG) console.log('[SmartFillAI]', ...args); };
+// (on the PAGE's DevTools console, not the popup) at any time to opt into
+// verbose logging. Evaluated at call time so enabling it after script load works.
+const sfaLog = (...args: unknown[]): void => {
+  if ((window as unknown as { __SFA_DEBUG?: boolean }).__SFA_DEBUG === true)
+    console.log('[SmartFillAI]', ...args);
+};
 
 
 sfaLog(
@@ -1547,6 +1550,11 @@ function tryLearnField(el: HTMLElement): void {
               profile.push(newEntry);
               chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
             }).catch(() => {});
+          },
+          onDismiss: () => {
+            // Pill timed out without user action — clear the dedup guard so
+            // the user can be prompted again if they change this field later.
+            delete el.dataset.dittoUpdatePromptShown;
           },
         });
       } catch {

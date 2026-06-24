@@ -316,6 +316,11 @@ let _hideTimer: ReturnType<typeof setTimeout> | undefined;
 let _currentTarget: PillTarget | null = null;
 let _activePillCallback: (() => void) | null = null;
 
+// When a user-action pill (learn / update-or-add) is visible, the hover-driven
+// fill pill must NOT overwrite it — the user needs to be able to click the
+// action buttons without the pill being replaced as they move toward it.
+let _stickyPillActive = false;
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 export function initOverlay(onFill: FillCallback): void {
@@ -333,6 +338,11 @@ export function initEssayOverlay(onEssay: EssayCallback): void {
 // ── Fill pill ─────────────────────────────────────────────────────────────────
 
 export function showPill(target: PillTarget): void {
+  // Don't overwrite a sticky user-action pill (learn / update-or-add) with a
+  // hover-triggered fill pill. The user is likely moving their cursor toward the
+  // action pill to click it — replacing it mid-travel is the bug that makes the
+  // pill "disappear" the moment the cursor enters the field on the way there.
+  if (_stickyPillActive) return;
   _currentTarget = target;
   clearTimeout(_hideTimer);
 
@@ -372,6 +382,7 @@ export function showPill(target: PillTarget): void {
 }
 
 export function hidePill(): void {
+  _stickyPillActive = false;
   if (pillEl) { pillEl.remove(); pillEl = null; }
   _currentTarget = null;
   _activePillCallback = null;
@@ -387,6 +398,7 @@ export function schedulePillHide(delayMs = 400): void {
 export function showLearnPill(target: LearnTarget): void {
   _currentTarget = null;
   clearTimeout(_hideTimer);
+  _stickyPillActive = true;
 
   const sh  = ensureHost();
   const pel = ensurePill(sh);
@@ -595,6 +607,8 @@ export interface UpdateOrAddTarget {
   newValue: string;
   onUpdate: () => void;
   onAdd:    () => void;
+  /** Called when the pill auto-dismisses (timeout) without the user clicking either button. */
+  onDismiss?: () => void;
 }
 
 let _uoaPillTimer: ReturnType<typeof setTimeout> | undefined;
@@ -602,6 +616,7 @@ let _uoaPillTimer: ReturnType<typeof setTimeout> | undefined;
 export function showUpdateOrAddPill(target: UpdateOrAddTarget): void {
   clearTimeout(_hideTimer);
   clearTimeout(_uoaPillTimer);
+  _stickyPillActive = true;
 
   const sh  = ensureHost();
   const pel = ensurePill(sh);
@@ -632,7 +647,12 @@ export function showUpdateOrAddPill(target: UpdateOrAddTarget): void {
   });
 
   positionPill(target.el);
-  _uoaPillTimer = setTimeout(hidePill, 8000);
+  _uoaPillTimer = setTimeout(() => {
+    // Auto-dismissed (user didn't act) — tell the caller so it can clear the
+    // "already prompted for this value" guard and allow re-prompting later.
+    target.onDismiss?.();
+    hidePill();
+  }, 8000);
 }
 
 // ── Alternatives panel ─────────────────────────────────────────────────────
