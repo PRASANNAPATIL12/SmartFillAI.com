@@ -4,27 +4,84 @@
 
 :root {
   --ditto-primary: #0ea5e9;
-  --ditto-bg: #ffffff;
-  --ditto-surface: #f8fafc;
-  --ditto-border: #e2e8f0;
   --ditto-text: #1e293b;
   --ditto-muted: #64748b;
 }
 
+/*
+  GLASS TRANSPARENCY — how it works:
+  1. html + body must be fully transparent so Chrome uses an alpha-transparent
+     render surface for the popup window.
+  2. backdrop-filter on #root then blurs whatever the OS composites behind the
+     popup — i.e. the actual browser page — giving true frosted-glass.
+  3. Cards and headers add more opaque white layers on top for readability.
+*/
+html {
+  background: transparent;
+}
+
 body {
   width: 360px;
-  min-height: 400px;
-  max-height: 600px;
   margin: 0;
-  overflow-x: hidden;
-  background: var(--ditto-bg);
+  background: transparent;           /* MUST be transparent — not rgba(…) */
   color: var(--ditto-text);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   font-size: 14px;
   line-height: 1.5;
 }
 
+/* Glass root — barely-there white tint + strong blur over the page behind */
 #root {
   width: 100%;
-  min-height: 400px;
+  background: rgba(248, 250, 252, 0.12);
+  backdrop-filter: blur(44px) saturate(200%) brightness(1.04);
+  -webkit-backdrop-filter: blur(44px) saturate(200%) brightness(1.04);
+}
+
+/* ── Glassmorphism utilities ─────────────────────────────────────────────── */
+@layer components {
+  /* Cards float on the blurred background with their own frosted surface */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.68);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.08);
+    border-radius: 0.75rem;
+  }
+
+  /* Header / footer strips — slightly more opaque than cards for anchoring */
+  .glass-header {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.60);
+  }
+
+  /* Icon buttons — always readable on any background */
+  .glass-btn-icon {
+    @apply p-1.5 rounded-lg transition-all;
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid rgba(148, 163, 184, 0.30);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  }
+  .glass-btn-icon:hover {
+    background: rgba(255, 255, 255, 0.90);
+    border-color: rgba(148, 163, 184, 0.45);
+  }
+}
+
+/* ── Custom scrollbar ────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
 }
