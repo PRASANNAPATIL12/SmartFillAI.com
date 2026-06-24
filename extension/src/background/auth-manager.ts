@@ -71,11 +71,41 @@ export async function signIn(email: string, password: string): Promise<Session> 
   return session;
 }
 
+export async function signUp(email: string, password: string): Promise<Session> {
+  if (!isSupabaseConfigured()) {
+    throw new Error('Cloud sync not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
+  }
+
+  const client = getAnonymousClient();
+  const { data, error } = await client.auth.signUp({ email, password });
+
+  if (error) {
+    throw new Error(error.message ?? 'Sign-up failed');
+  }
+
+  // If email confirmation is disabled in Supabase, data.session is available immediately.
+  // If email confirmation is enabled, data.session will be null — surface a friendly message.
+  if (!data.session || !data.user) {
+    throw new Error('Account created — check your email to confirm before signing in.');
+  }
+
+  const session: Session = {
+    accessToken:  data.session.access_token,
+    refreshToken: data.session.refresh_token,
+    userId:       data.user.id,
+    email:        data.user.email ?? email,
+    expiresAt:    (data.session.expires_at ?? 0) * 1000,
+  };
+
+  await setSession(session);
+  return session;
+}
+
 export async function signOut(): Promise<void> {
   const session = await getSession();
   if (session) {
     try {
-      const client = await getAuthClient(session);
+      const client = getAuthClient(session);
       await client.auth.signOut();
     } catch {
       // Best-effort — clear local state regardless

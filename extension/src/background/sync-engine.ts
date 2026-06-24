@@ -43,7 +43,7 @@ export async function pushSyncQueue(): Promise<{ pushed: number; failed: number 
   const queue = await getSyncQueue();
   if (queue.length === 0) return { pushed: 0, failed: 0 };
 
-  const client = await getAuthClient(session);
+  const client = getAuthClient(session);
   let pushed = 0;
   let failed = 0;
 
@@ -127,7 +127,7 @@ export async function pushFormFingerprints(): Promise<{ pushed: number; failed: 
   const syncable = all.filter(fp => (fp.source ?? 'learned') !== 'template');
   if (syncable.length === 0) return { pushed: 0, failed: 0 };
 
-  const client = await getAuthClient(session);
+  const client = getAuthClient(session);
   const rows: FormFingerprintRow[] = syncable.map(fp => ({
     user_id:    session.userId,
     key:        fp.key,
@@ -154,7 +154,7 @@ export async function pullFormFingerprints(): Promise<{ pulled: number }> {
   const session = await getSession();
   if (!session) return { pulled: 0 };
 
-  const client = await getAuthClient(session);
+  const client = getAuthClient(session);
   const { data: rows, error } = await client
     .from(FINGERPRINT_TABLE)
     .select('*')
@@ -184,7 +184,7 @@ export async function pullFromCloud(): Promise<{ pulled: number }> {
   const session = await getSession();
   if (!session) return { pulled: 0 };
 
-  const client = await getAuthClient(session);
+  const client = getAuthClient(session);
 
   const { data: rows, error } = await client
     .from(TABLE)
