@@ -218,14 +218,14 @@ describe('GeminiProvider', () => {
 describe('Config', () => {
   it('returns default config when nothing is stored', async () => {
     const config = await getProviderConfig();
-    expect(config.provider).toBe('groq');
+    expect(config.provider).toBe('gemini');
     expect(config.trackCost).toBe(true);
   });
 
   it('persists and reads back config changes', async () => {
-    await setProviderConfig({ provider: 'gemini' });
+    await setProviderConfig({ provider: 'groq' });
     const config = await getProviderConfig();
-    expect(config.provider).toBe('gemini');
+    expect(config.provider).toBe('groq');
   });
 
   it('merges partial config updates', async () => {

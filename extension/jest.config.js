@@ -9,7 +9,8 @@ export default {
     '^@shared/(.*)$': '<rootDir>/../shared/$1',
     '\\.css$': 'identity-obj-proxy',
     // Swap env.ts → env.mock.ts so Jest never hits import.meta
-    '^.*/ai-providers/env$': '<rootDir>/src/ai-providers/env.mock.ts',
+    // Matches both './env' (relative) and '@/ai-providers/env' (alias)
+    '(^\\./env$|ai-providers[/\\\\]env$)': '<rootDir>/src/ai-providers/env.mock.ts',
   },
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   transform: {

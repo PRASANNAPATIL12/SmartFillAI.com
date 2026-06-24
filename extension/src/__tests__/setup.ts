@@ -51,8 +51,34 @@ const chromeRuntime = {
   },
 };
 
+// ── document.execCommand mock (not available in jsdom) ───────────────────────
+// contenteditableHandler uses execCommand('insertText') as a compatibility shim.
+// jsdom doesn't implement it; return false so the handler falls back to innerText.
+if (!document.execCommand) {
+  document.execCommand = () => false;
+}
+
+// ── CSS.escape mock (not available in jsdom) ─────────────────────────────────
+if (typeof (globalThis as any).CSS === 'undefined') {
+  (globalThis as any).CSS = {
+    escape: (value: string) => value.replace(/([!"#$%&'()*+,.\/:;<=>?@[\\\]^`{|}~])/g, '\\$1'),
+  };
+}
+
+// ── crypto.randomUUID mock (not available in jsdom) ─────────────────────────
+let uuidCounter = 0;
+if (!globalThis.crypto?.randomUUID) {
+  Object.defineProperty(globalThis.crypto, 'randomUUID', {
+    value: () => `test-uuid-${++uuidCounter}`,
+    writable: true,
+  });
+} else {
+  (globalThis.crypto as any).randomUUID = () => `test-uuid-${++uuidCounter}`;
+}
+
 // Reset store and mocks between tests
 beforeEach(() => {
+  uuidCounter = 0;
   Object.keys(store).forEach(k => delete store[k]);
   jest.clearAllMocks();
 });
