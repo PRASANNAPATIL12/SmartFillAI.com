@@ -1769,13 +1769,59 @@ function learnDropdownSelection(el: HTMLElement, optionText: string): void {
     if (normalized === state.entry.value) return;
     if (!validateLearnedValue(state.entry.canonical_key, normalized)) return;
     if (el.dataset.dittoLastLearnedValue === normalized) return;
+    if (el.dataset.dittoUpdatePromptShown === normalized) return;
     el.dataset.dittoLastLearnedValue = normalized;
-    if (autoSave) {
-      doUpdateEntry(state.entry.id, normalized).catch(() => {});
-      el.dataset.dittoPreFocusValue = normalized;
-    } else {
-      showLearnPill({ el, label: `Update ${state.entry.display_label || 'field'}?`, value: normalized });
-    }
+    el.dataset.dittoUpdatePromptShown = normalized;
+
+    const canonicalKey = state.entry.canonical_key;
+    const displayLabel = state.entry.display_label || 'Field';
+    const entryId = state.entry.id;
+    const oldValue = state.entry.value;
+
+    (async () => {
+      try {
+        const isDup = await sendToBackground<boolean>('CHECK_DUPLICATE_VALUE', {
+          canonicalKey, value: normalized,
+        });
+        if (isDup) return;
+
+        const count = (await sendToBackground<ProfileEntry[]>('GET_ALTERNATIVES', { canonicalKey })).length;
+        const maxAlts = 5;
+
+        if (count >= maxAlts) {
+          doUpdateEntry(entryId, normalized).catch(() => {});
+          el.dataset.dittoPreFocusValue = normalized;
+          return;
+        }
+
+        showUpdateOrAddPill({
+          el,
+          label: displayLabel,
+          oldValue,
+          newValue: normalized,
+          onUpdate: () => {
+            doUpdateEntry(entryId, normalized).catch(() => {});
+            el.dataset.dittoPreFocusValue = normalized;
+          },
+          onAdd: () => {
+            sendToBackground<ProfileEntry>('ADD_ALTERNATIVE', {
+              canonicalKey,
+              value: normalized,
+              displayLabel,
+              category: state.entry!.category,
+            }).then(newEntry => {
+              profile.push(newEntry);
+              chrome.storage.local.set({ [PROFILE_CACHE_KEY]: profile }).catch(() => {});
+            }).catch(() => {});
+          },
+          onDismiss: () => {
+            delete el.dataset.dittoUpdatePromptShown;
+          },
+        });
+      } catch {
+        doUpdateEntry(entryId, normalized).catch(() => {});
+      }
+    })();
   }
 }
 

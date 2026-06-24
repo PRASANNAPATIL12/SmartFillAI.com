@@ -545,13 +545,25 @@ export async function fillCombobox(
     await sleep(220); // wait for React re-render to complete
   }
 
-  const freshListbox = findListbox(el);
-  if (freshListbox) {
-    const freshOptions = getOptions(freshListbox);
+  // Poll for fresh options — async-search dropdowns (Google Places, Greenhouse
+  // Location/City) issue a network request after writeValue. The results may
+  // take longer than 220ms to appear. Poll up to ~600ms more before giving up.
+  let freshListbox: HTMLElement | null = null;
+  let freshOptions: HTMLElement[] = [];
+  for (let poll = 0; poll < 4; poll++) {
+    freshListbox = findListbox(el);
+    if (freshListbox) {
+      freshOptions = getOptions(freshListbox);
+      if (freshOptions.length > 0) break;
+    }
+    if (poll < 3) await sleep(150);
+  }
+
+  if (freshListbox && freshOptions.length > 0) {
+    const freshTexts = freshOptions.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
     let pick = freshOptions.find(o => optionMatches(o, aliases));
     if (!pick && freshOptions.length === 1) pick = freshOptions[0];
     if (pick) {
-      const freshTexts = freshOptions.map(o => (o.textContent ?? '').replace(/\s+/g, ' ').trim());
       const pickText = (pick.textContent ?? '').replace(/\s+/g, ' ').trim();
       const ok = await clickOption(el, pick, freshListbox);
       if (ok) { markFilled(el); void setResolvedOption(freshTexts, value, pickText); return true; }
