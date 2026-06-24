@@ -1,5 +1,5 @@
 import type { FieldHandler, FillContext } from './types';
-import { fillButtonDropdown } from '../combobox';
+import { fillButtonDropdown, getComboboxDisplayValue } from '../combobox';
 import { gatherDropdownOptions } from '../detector';
 
 export const ariaComboboxHandler: FieldHandler = {
@@ -16,6 +16,13 @@ export const ariaComboboxHandler: FieldHandler = {
   },
 
   capture(el: HTMLElement): string {
+    const matValue = el.querySelector?.('.mat-mdc-select-value-text, .mat-select-value-text, [class*="select-value-text"]');
+    if (matValue) {
+      const text = (matValue.textContent ?? '').trim();
+      if (text) return text;
+    }
+    const display = getComboboxDisplayValue(el);
+    if (display) return display;
     return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
   },
 

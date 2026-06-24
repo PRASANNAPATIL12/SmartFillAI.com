@@ -19,6 +19,7 @@ create table if not exists public.profile_entries (
 
 alter table public.profile_entries enable row level security;
 
+drop policy if exists "users_own_entries" on public.profile_entries;
 create policy "users_own_entries"
   on public.profile_entries
   for all
