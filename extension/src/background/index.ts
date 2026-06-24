@@ -16,6 +16,7 @@ import { classifyFields, type FieldClassifySpec } from './llm-classifier';
 import { answerField } from './answer-field';
 import { generateResumeQA } from './resume-qa-generator';
 import { clearLlmAnswers, normalizeQuestion, getRememberedAnswer, rememberAnswer } from '../content-script/qa-cache';
+import { extractSections } from './resume-sections';
 import {
   AIProviderFactory,
   setAPIKey,
@@ -748,6 +749,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     }
 
     let extractedText: string | null = null;
+    let resumeSections: import('@shared/types').ResumeSection[] | undefined;
 
     // Auto-parse resume PDFs to update profile entries
     if (docType === 'resume') {
@@ -755,12 +757,14 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
         if (mimeType === 'application/pdf') {
           const parsed = await parseResumePdf(fileDataBase64);
           extractedText = parsed.full_text || JSON.stringify(parsed);
+          resumeSections = extractSections(parsed, extractedText ?? undefined);
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         } else if (mimeType === 'text/plain') {
           const text = new TextDecoder().decode(bytes);
           const parsed = await parseResumeText(text);
           extractedText = parsed.full_text || text;
+          resumeSections = extractSections(parsed, extractedText ?? undefined);
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
@@ -779,6 +783,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       fileSize: bytes.length,
       fileData: bytes.buffer as ArrayBuffer,
       extractedText,
+      resumeSections,
       isDefault: true,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -833,11 +838,13 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     if (!existing) throw new Error('Document not found');
 
     let extractedText: string | null = null;
+    let resumeSections: import('@shared/types').ResumeSection[] | undefined;
     if (existing.docType === 'resume') {
       try {
         if (mimeType === 'application/pdf') {
           const parsed = await parseResumePdf(fileDataBase64);
           extractedText = parsed.full_text || JSON.stringify(parsed);
+          resumeSections = extractSections(parsed, extractedText ?? undefined);
           await createEntriesFromResume(parsed, userId);
           refreshCSCache().catch(() => {});
         }
@@ -853,6 +860,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
       fileSize: bytes.length,
       fileData: bytes.buffer as ArrayBuffer,
       extractedText: extractedText ?? existing.extractedText,
+      resumeSections: resumeSections ?? existing.resumeSections,
       updatedAt: Date.now(),
     });
     refreshDocumentsMetaCache().catch(() => {});

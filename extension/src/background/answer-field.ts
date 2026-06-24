@@ -24,6 +24,7 @@ import { logCost } from '@/ai-providers/cost-tracker';
 import type { ProfileEntry } from '@shared/types';
 import { getAllEntries } from './profile-store';
 import { getDefaultDocument } from '@/storage/idb';
+import { selectRelevantSections } from './resume-sections';
 
 export interface AnswerResult {
   answer: string | null;   // null = no confident answer (caller skips / FILL_FAILED)
@@ -73,7 +74,16 @@ export async function answerField(
   let resumeText = '';
   try {
     const doc = await getDefaultDocument('resume');
-    resumeText = (doc?.extractedText ?? '').slice(0, 6000);
+    if (doc) {
+      // Phase AH: if the document has structured sections, retrieve only the
+      // sections most relevant to this question. Falls back to full extractedText
+      // for documents uploaded before Phase AH (no sections field).
+      if (doc.resumeSections && doc.resumeSections.length > 0) {
+        resumeText = selectRelevantSections(q, doc.resumeSections);
+      } else {
+        resumeText = (doc.extractedText ?? '').slice(0, 6000);
+      }
+    }
   } catch { /* no resume — proceed with profile only */ }
 
   const optionsBlock = options.length

@@ -248,9 +248,20 @@ export interface StoredDocument {
   /** Actual file bytes — stored in IDB only, never serialized over messages */
   fileData?: ArrayBuffer;
   extractedText: string | null;
+  /** Structured resume sections for targeted RAG retrieval (Phase AH). Only populated for resume docType. */
+  resumeSections?: ResumeSection[];
   isDefault: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * A semantic section of a parsed resume, used for targeted context retrieval
+ * in the LLM answer tier (Phase AH — Resume RAG).
+ */
+export interface ResumeSection {
+  name: 'summary' | 'personal' | 'experience' | 'education' | 'skills' | 'certifications' | 'misc';
+  content: string;
 }
 
 /** Metadata-only view (no fileData) safe for message passing */
