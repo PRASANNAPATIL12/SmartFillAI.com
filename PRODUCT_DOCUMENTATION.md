@@ -1,1046 +1,669 @@
 # SmartFillAI — Complete Product Documentation
 
-**Last Updated:** 2026-06-21  
-**Product Name:** SmartFillAI (formerly "Ditto")  
-**Current Version:** 1.0.0  
-**Type:** Chrome Manifest V3 Extension  
-**Status:** Active Development (Phases G-M Merged)
+> **Last Updated:** 2026-06-25 (Phase AG complete)
+> **Status:** Production-Ready — 28 commits ahead of origin/main, pending push
+> **Repository:** PRASANNAPATIL12/SmartFillAI
+> **Extension Type:** Manifest V3 (Chrome, Edge, Brave, Arc)
+> **Version:** 1.3.0
 
 ---
 
-## 1. Executive Summary
+## Executive Summary
 
-### What It Is
-SmartFillAI is a Chrome extension that intelligently auto-fills form fields across any website. It learns from user behavior, maintains a personal profile of common answers, and uses AI (Gemini/GROQ) to synthesize personalized responses for complex questions.
+**SmartFillAI** is a universal form autofill Chrome extension that fills any web form — especially job application portals — using a self-growing personal profile. It operates on a **local-first** architecture:
 
-### The Problem It Solves
-- Job seekers spend 30+ minutes filling identical questions on different job portals (Greenhouse, Workday, Lever, eBay, Happiest Minds, etc.)
-- Each portal has different field layouts, label names, and input types (text, dropdown, combobox, radio, checkbox, file uploads)
-- The user has to manually type the same answer 100+ times across applications
+- 90%+ of fills happen entirely in-browser, AI is only used for ambiguous field classification and essay generation
+- Form values **never leave the browser** in Steps 1–5 of the matching waterfall
+- Learns from every new field the user fills, growing more accurate over time
+- Cross-device sync via Supabase (profile entries + form fingerprints)
 
-### Who Uses It
-- **Primary:** Job seekers (college graduates, career changers, active job hunters)
-- **Secondary:** Anyone filling repetitive forms (surveys, registrations, profile signups)
-- **Not Yet:** B2B (no current business use case)
-
-### Why It Exists
-To eliminate form-filling busywork and let people focus on the actual job search.
-
-### Current Maturity Level
-**Phase M (Checkbox Groups) completed, merged to main**
-- Core fills: 95%+ working for text, select, combobox, radio, checkbox, file uploads
-- AI synthesis: working for narrative questions
-- Multi-device sync: infrastructure built (Supabase), feature partially complete
-- Q→A memory: working with priority levels and superset-replace logic
-- Known limitations: Angular Material mat-select dropdowns not auto-detected; custom field types require manual entry first
-
-### Development Stage
-**Late Alpha / Early Beta**
-- Feature-complete for form detection and filling (7 field types)
-- Learning system stable (Q→A cache + profile store)
-- AI synthesis working (company-aware, factual vs narrative distinction)
-- Bugs fixed: Expected CTC, checkbox partial fill, Angular Material dropdown pollution, current_company alignment
-- Not production-ready for deployment to Chrome Web Store (diagnostics still in code, Supabase integration incomplete)
+**One-line pitch:** *Your profile, on every form. Learns as you go. Thinks when it matters.*
 
 ---
 
-## 2. Product Overview
+## 1. Core Product Features
 
-### Core Capabilities
+### 1.1 Universal Form Detection
 
-| Capability | Status | Notes |
+Detects ALL standard and custom input types:
+
+| Input Kind | Examples | Handler |
+|---|---|---|
+| Native text/email/tel/url | First Name, Email, Phone | `textHandler` |
+| Native `<select>` | Country, State, Degree | `selectHandler` |
+| Native `<input type="radio">` | Work auth, Gender | `radioGroupHandler` |
+| Native `<input type="checkbox">` | Skills, preferences | `checkboxGroupHandler` |
+| `<input type="date">` | Date of birth, Start date | `dateHandler` |
+| ARIA combobox (React Select, Greenhouse) | Location, Country | `comboboxHandler`, `ariaComboboxHandler` |
+| Button-triggered dropdowns | Phone country picker | `buttonDropdownHandler` |
+| `[contenteditable]` / `role="textbox"` | Rich text fields | `contenteditableHandler` |
+| ARIA radio/checkbox/switch | Custom choice widgets | `ariaChoiceHandler` |
+| `<input type="file">` / dropzones | Resume upload | File handler in fill loop |
+
+**Discovery approach:** MutationObserver watches DOM changes → `extractAllFields()` gathers both native elements and ARIA widgets → de-duplication prevents double-counting when native elements have ARIA roles.
+
+### 1.2 The Matching Waterfall — 7 Steps
+
+Every detected field passes through this cascade. **Steps are tried in order; first confident match wins.**
+
+| Step | Name | Latency | Coverage | Method |
+|------|------|---------|----------|--------|
+| 1 | **SKIP** | <1ms | ~10% skipped | Password/hidden/search/captcha rules |
+| 2 | **FINGERPRINT** | ~1ms | ~60% on returning forms | IndexedDB form-fingerprint cache |
+| 3 | **ESSAY** | <1ms | ~5% | Large textarea + question-label patterns |
+| 4 | **RULES** | ~5ms | ~80% | 200+ autocomplete/label/keyword patterns |
+| 5 | **EMBEDDINGS** | ~30ms | ~92% | MiniLM-L6-v2 cosine similarity (local, threshold 0.75) |
+| 6 | **LLM CLASSIFY** | ~500ms | ~97% | Batched GROQ/Gemini prompt (threshold 0.70) |
+| 7 | **Q&A REPLAY** | ~1ms | question fields | Remembered answer for question-label match |
+
+**Cost:** Steps 1–5 are entirely free (no API calls, no network). Step 6 costs ~$0.0001/batch. Step 7 is free (local cache).
+
+**Form data policy:** Absolutely no form values (names, emails, phone numbers) are ever sent outside the browser in Steps 1–6. Step 6 sends ONLY field labels (e.g. "First Name", "Work Authorization") with no user data values.
+
+### 1.3 Fill Execution — 4-Level Retry Cascade
+
+For each matched field, the extension tries to inject the value through increasingly aggressive methods:
+
+```
+Level 1: Native setter + React _valueTracker reset + input/change events
+  ↓ (if value still wrong after dispatch)
+Level 2: Char-by-char InputEvent simulation
+  (keydown → InputEvent('insertText') → nativeSetter → keyup per character)
+  (capped at 100 chars; handles React 18 controlled inputs that ignore native setter)
+  ↓ (if still wrong)
+Level 3: execCommand('insertText') fallback
+  (handles some Shadow DOM hosts that ignore synthetic events)
+  ↓ (if still wrong)
+Mark FILL_FAILED + console.warn
+```
+
+**Dropdown-specific cascade:**
+
+```
+fillCombobox / fillSelect / fillButtonDropdown:
+  1. Cache 3 hit: prior option-text resolution for this value+optionSet → direct pick
+  2. Exact match: option value attribute === stored value
+  3. Case-insensitive text match (strip emoji)
+  4. First-component exact: "Bangalore (South), KA" first component = "bangalore"?
+  5. Containment + word-boundary guard: "bangalore" in "bangalore (south), ..."
+     (char after "bangalore" must NOT be a letter — prevents "bangalorean" false match)
+  6. Embedding fallback: MiniLM cosine similarity on option texts
+  7. FILL_FAILED
+```
+
+For ARIA comboboxes (react-select etc.), after typing to filter:
+- Poll for options up to 800ms (220ms base + 4×150ms) — handles Google Places / Greenhouse async city search
+
+### 1.4 Learning Loop
+
+**Three learning paths:**
+
+**Path 1 — Unknown field (UNKNOWN status):**
+```
+User types in any unrecognized field → blur/debounce 200ms
+  → Extract value + field signature
+  → Validate: no passwords, no garbage, no multi-paragraph blobs
+  → autoSave=true: silently learn (show nothing)
+  → autoSave=false: show green "Learn" pill
+  → Infer canonical key (200+ rules → or null → Q&A cache)
+  → Store as ProfileEntry + sync to cloud
+```
+
+**Path 2 — Matched field changes (MATCHED status):**
+```
+User changes a field that was already filled by extension → blur/sweep
+  → Get display value via handler.capture(el)
+  → New value ≠ stored value?
+  → Check duplicates across alternatives
+  → Count existing alternatives (cap = 5)
+  → ALWAYS show Update-or-Add pill (8s sticky, cursor-move safe):
+      [Update] → replace stored value (doUpdateEntry)
+      [Add]    → add as alternative (ADD_ALTERNATIVE)
+      [dismiss / timeout] → clear guard so user can re-prompt later
+```
+
+**Path 3 — Manual dropdown selection (handleListboxOptionMousedown):**
+```
+User manually clicks a listbox option (isTrusted=true only)
+  → Capture exact option text before dropdown closes
+  → Find owner field via activeElement → aria-controls/aria-owns → DOM search
+  → learnDropdownSelection(owner, optionText)
+  → UNKNOWN: same as Path 1 (Q&A cache + profile)
+  → MATCHED: show Update-or-Add pill (same as Path 2)
+    (NOT a silent update — user always sees the pill and can choose)
+```
+
+**Dedup guards:**
+- `dittoLastLearnedValue` — prevents re-saving same value in one session
+- `dittoUpdatePromptShown` — prevents re-showing pill for same value within one open
+- `dittoPreFocusValue` — captures value at focus-time so unfocused fields don't re-trigger
+- `onDismiss` callback clears `dittoUpdatePromptShown` when 8s pill times out (so user CAN see it again on next interaction)
+
+### 1.5 Form Fingerprinting (ATS Memory)
+
+Forms are identified by a structural fingerprint, not by domain. This lets the extension reuse learned field mappings across:
+- Company-hosted Greenhouse forms (`databricks.com/...?gh_jid=...`)
+- ATS template forms (`boards.greenhouse.io/greenhouse`)
+- Repeated visits to the same form structure
+
+**Fingerprint key:** `${atsId}::${structuralHash}`
+- `atsId` = detected ATS (e.g. `greenhouse`, `workday`, `lever`) or `host:domain.com`
+- `structuralHash` = hash of sorted (role, normalizedLabel, inputType) tuples
+
+**Source types:**
+- `source: 'template'` — built-in ATS templates seeded on install (5 ATSes, ~70 fields total)
+- `source: 'learned'` — from real user fills; synced to Supabase
+
+**Templates pre-seeded (day-one accuracy ~80%):**
+- Greenhouse: 25 fields (first_name, last_name, email, phone, resume, linkedin_url, github_url, work_authorization, gender, disability_status, veteran_status, ...)
+- Workday: 18 fields (address_line1, city, state, zip_code, notice_period, ...)
+- Lever: 9 fields
+- LinkedIn Easy Apply: 6 fields
+- Naukri: 10 fields (current_ctc, notice_period, ...)
+
+### 1.6 Embedded ATS Detection
+
+Detects the REAL form platform even when a company hosts the form on their own domain.
+
+**Detection layers (first confident match wins):**
+
+| Layer | Signal | Confidence | Example |
+|---|---|---|---|
+| 1 | Direct hostname | 1.0 | `boards.greenhouse.io` |
+| 2 | Query parameters | 0.95 | `?gh_jid=xxx` → Greenhouse |
+| 3 | Iframe src | 0.95 | `<iframe src="lever.co/...">` |
+| 4 | Form action URL | 0.90 | `action="workday.com/..."` |
+| 5 | Script tag sources | 0.90 | `<script src="boards-api.greenhouse.io/...">` |
+| 6 | DOM signatures | 0.85 | `#greenhouse_application`, `[data-automation-id]` |
+| 7 | Hostname fallback | 0.30 | `host:databricks.com` |
+
+**Re-detection:** MutationObserver re-runs detection when `script` or `iframe` tags are added late (Greenhouse boards.js loads async). On upgrade from layer-7 to higher-confidence layer, fingerprint cache is invalidated and re-keyed.
+
+### 1.7 Essay Generation with Company Context
+
+**Three tiers, picked automatically:**
+
+```
+Tier 1 — Factual question (label is short attribute-like):
+  Exact → fuzzy match in Q&A cache → replay verbatim (0 API calls)
+
+Tier 2 — Narrative + Company detected:
+  Prior answer found → seed it + adapt to THIS company via Gemini
+  ("You previously answered: ... Now adapt it for Stripe, emphasizing...")
+
+Tier 3 — Narrative, no prior answer:
+  Generate from scratch using resume text + company + question
+```
+
+**Company detection:** JSON-LD Organization → og:site_name → ATS URL keywords → `<title>` → hostname (cached per page load).
+
+### 1.8 Resume Processing
+
+| Format | Parser | Notes |
+|--------|--------|-------|
+| PDF | Gemini (inline PDF) | Full layout understanding |
+| Text paste | GROQ (Llama-3.3-70B) | Fast, free |
+
+**Post-parse:** Structured extraction → profile entries with embeddings. Resume Q&A pre-generated at upload time (so essay tier works immediately). Q&A cache invalidated on resume replacement.
+
+### 1.9 Cloud Sync (Supabase)
+
+**What syncs:** Profile entries + form fingerprints (learned only, not templates)
+**What never syncs:** Embeddings (recomputed per-device), form values, Q&A answers
+
+**Protocol:**
+- 5-min chrome.alarms tick → push `sync_queue` (add/update/delete ops) → pull remote changes → merge (last-write-wins by `updated_at`)
+- Sign-in triggers immediate pull → Sign-out triggers push first
+- Offline: changes queue, drain on next wake
+- Supabase client: Bearer token injected via `global.headers` at creation time (no `setSession()` → no flood of `Failed to fetch` on offline)
+
+**Auth:** Email/password Supabase auth. Session stored in `chrome.storage.local`, token refreshed 60s before expiry.
+
+### 1.10 Visual Feedback System
+
+| Element | Description | Trigger |
+|---------|-------------|---------|
+| Fill pill | "⚡ Fill N fields" → click to autofill | Hover / focus on form |
+| Ghost text | Grayed value preview inside field | Field matched, not yet filled |
+| Field badge | Green/yellow/grey dot on field | Confidence band (fill/review/skip) |
+| Learn pill | Green "Save ___?" prompt | New field detected (autoSave=off) |
+| Update-or-Add pill | "Update 'Bangalore'→'Bangalore (South)...'?" | Matched field changed |
+| Success banner | "Filled X / N fields" | After fill completes (fades 3s) |
+| Status badge | `FILL_FAILED` marker | Dropdown fill failed (debug) |
+
+**Pill safety:** `_stickyPillActive` flag prevents hover/focus from replacing an active Update-or-Add or Learn pill. Pill is sticky until dismissed by user action or 8s timeout.
+
+---
+
+## 2. Full Architecture Flow
+
+### 2.1 On Page Load
+
+```
+MutationObserver fires (DOM settled, 300ms quiet / 2s max)
+  ↓
+detectAts(url, document)  ← 7-layer ATS detection, cached
+  ↓
+extractAllFields(document)
+  ├─ Native: input/textarea/select (de-dup by ID/name)
+  ├─ Radio groups: group by name attr → one FieldSignature per group
+  ├─ Checkbox groups: group by name attr
+  ├─ ARIA widgets: [role="combobox/radio/checkbox/switch/textbox/radiogroup"]
+  └─ File inputs + dropzones
+  ↓
+For each field → matcher.ts waterfall (Steps 1–7)
+  ↓
+matchMap<HTMLElement, {sig, result, entry}> populated
+  ↓
+Inject overlay:
+  ├─ paintFieldBadge(el) on each matched element
+  ├─ showGhost(el, value) for MATCHED fields
+  └─ Floating pill: "⚡ Fill N fields"
+```
+
+### 2.2 On Fill (User Clicks Pill)
+
+```
+fillAll(matchMap, profile, documentsMeta)
+  ↓
+Loop 1 — Profile fields (MATCHED):
+  For each MATCHED field:
+    resolveHandler(el).fill(el, value, ctx)
+      → Level 1: nativeSetter + events
+      → Level 2: char-by-char (if Level 1 fails)
+      → Level 3: execCommand (if Level 2 fails)
+    → For dropdowns: optionMatches cascade → embedding fallback
+    → Mark filled, apply green flash
+  ↓
+Loop 2 — Q&A replay (UNKNOWN fields with remembered answers):
+  getRememberedAnswer(fieldLabel) → fill if found
+  ↓
+Loop 3 — LLM answer tier (remaining UNKNOWN):
+  ANSWER_FIELD message → Gemini (gemini-2.0-flash)
+    → factual: verbatim replay (Q&A cache)
+    → narrative + company: seed + adapt
+    → narrative only: generate from scratch
+  ↓
+Loop 4 — File attach:
+  documentsMeta → auto-attach resume/cover letter to <input type="file">
+  ↓
+Banner: "✓ Filled X / N fields" (fades 3s)
+```
+
+### 2.3 On User Interaction (Learning)
+
+```
+Any input blur / change / mousedown on listbox option
+  ↓
+tryLearnField(el) OR learnDropdownSelection(el, optionText)
+  ↓
+Status check:
+  UNKNOWN → validate → infer canonical key → learn (show pill or silent)
+  MATCHED → value changed? → Update-or-Add pill → user confirms
+  SKIP    → ignore
+  ↓
+On confirm:
+  LEARN_FIELD → background: create ProfileEntry + compute embedding
+  UPDATE_ENTRY → background: update value + recompute embedding
+  ADD_ALTERNATIVE → background: add as alternative entry
+  ↓
+sync_queue.push({op: 'add'|'update', ...})
+  → 5-min alarm: push to Supabase
+```
+
+### 2.4 Handler Registry Dispatch
+
+```typescript
+HANDLERS (ordered by precedence):
+  ariaComboboxHandler    // role="combobox" (div/button, NOT input)
+  buttonDropdownHandler  // <button> / role="button" wrappers
+  selectHandler          // <select>
+  comboboxHandler        // <input aria-autocomplete|aria-controls|...>
+  ariaChoiceHandler      // role="radio/checkbox/switch"
+  radioGroupHandler      // <input type="radio"> representative
+  checkboxGroupHandler   // <input type="checkbox"> representative
+  dateHandler            // <input type="date|month|week">
+  contenteditableHandler // contenteditable="true" / role="textbox"
+  textHandler            // fallback (all other inputs + textareas)
+
+resolveHandler(el):
+  return HANDLERS.find(h => h.match(el)) ?? textHandler
+```
+
+---
+
+## 3. Scenario Walkthroughs
+
+### Scenario A: Greenhouse via company domain (Databricks)
+
+**URL:** `https://jobs.databricks.com/careers/apply?gh_jid=7654321`
+
+```
+1. detectAts() — Layer 2 (query param): gh_jid= → atsId="greenhouse" (confidence=0.95)
+2. fingerprintKey = "greenhouse::abcdef123"
+3. ATS templates pre-seeded → 25 fields already mapped
+4. extractAllFields() → 18 native inputs found
+5. Matcher Step 2: fingerprint hit for 14 fields (template match)
+   → Step 4 handles remaining 4 via rules
+6. Location (City) field: stored value = "Bangalore"
+   → dropdown type: ariaCombobox (react-select)
+   → fillCombobox opens panel, scans initial options
+   → "Bangalore" not in first 20 options (Google Places async)
+   → writeValue("Bangalore") → polls 4×150ms for options
+   → "Bangalore (South), Karnataka, India" appears → optionMatches passes
+   → clickOption → committed → markFilled
+   → tryLearnField sweep: display value ≠ stored value → Update-or-Add pill
+   → User clicks "Add" → "Bangalore (South), Karnataka, India" stored as alternative
+7. Resume file: Loop 4 attaches resume.pdf to file input
+8. "✓ Filled 16 / 18 fields"
+```
+
+### Scenario B: User picks a different city manually
+
+**Situation:** User manually selects "Hyderabad, Telangana, India" from city dropdown
+
+```
+1. handleListboxOptionMousedown fires (isTrusted=true)
+2. optionEl.textContent = "Hyderabad, Telangana, India"
+3. Find owner: activeAtMousedown → matchMap combobox element
+4. learnDropdownSelection(owner, "Hyderabad, Telangana, India")
+5. state.result.status = 'MATCHED', state.entry.value = "Bangalore"
+6. normalized = "Hyderabad, Telangana, India" ≠ "Bangalore"
+7. Check duplicate → not a dup
+8. Count alternatives → 1 (< maxAlts 5)
+9. showUpdateOrAddPill:
+   → "current_location: Bangalore → Hyderabad, Telangana, India"
+   → [Update] → replaces "Bangalore" in profile
+   → [Add] → keeps "Bangalore", adds "Hyderabad..." as alternative
+   → 8s sticky (cursor moves do NOT close it)
+10. Next visit: profile has "Hyderabad..." → Option Resolution Cache maps
+    value→option directly (instant, no optionMatches needed)
+```
+
+### Scenario C: Returning user, fully warmed cache
+
+**URL:** Second visit to same Workday form
+
+```
+1. detectAts() → "workday" (direct hostname, confidence=1.0)
+2. Fingerprint key = "workday::xyz789"
+3. Step 2 cache hit: ALL 15 fields mapped instantly
+4. Fill pill: "⚡ Fill 15 fields"
+5. Fill: all Level 1 native setter (no retry needed for Workday)
+6. Option Resolution Cache: country "India" → cached as "🇮🇳 India +91"
+7. Total fill time: ~150ms (zero AI calls)
+8. "✓ Filled 15 / 15 fields"
+```
+
+### Scenario D: Essay question on Stripe careers (Greenhouse)
+
+**URL:** `https://stripe.com/jobs/listing/1234567`
+
+```
+1. detectAts() → "greenhouse" via DOM signature (#greenhouse_application)
+2. Form scan finds: essay field "Why do you want to work at Stripe?"
+3. Step 3: Essay detection → ESSAY status
+4. Ghost text: grayed preview of prior essay answer (if any)
+5. User clicks "Generate ✨" on essay pill
+6. company = "Stripe" (detected via JSON-LD/og:site_name)
+7. Prior answer for "Why do you want to work here?" found in Q&A cache → seedAnswer
+8. Gemini call: adapt seedAnswer to Stripe context (Tier 2)
+9. Streaming response → user sees text appear token by token
+10. User edits → clicks "Use This" → essay fills into textarea
+```
+
+### Scenario E: Work authorization radio group (Workday)
+
+**Form:** "Are you authorized to work in the US?" with options [Yes, No, Visa Sponsorship Required]
+
+```
+1. extractAllFields() → radioGroupHandler matches representative input
+2. FieldSignature.options = ["Yes", "No", "Visa Sponsorship Required"]
+3. Matcher Step 4: label matches work_authorization rule → MATCHED
+4. profile.entry.value = "Yes, I am authorized to work"
+5. expandValueAliases('work_authorization', "Yes, I am authorized to work")
+   → aliases = ["Yes", "I am authorized", "Authorized to work", ...]
+6. radioGroupHandler.fill() → iterates options:
+   → "Yes" matches alias "Yes" → click that radio button
+7. Learn sweep: value = "Yes" → matches normalized stored value → no pill
+```
+
+---
+
+## 4. Technology Stack
+
+| Component | Technology |
+|-----------|------------|
+| **UI** | React 18 + TypeScript + Tailwind CSS + Vite |
+| **Extension** | Manifest V3 · Service Worker · Content Script · Shadow DOM |
+| **Local Storage** | `chrome.storage.local` (10MB) + IndexedDB v5 (unlimited) |
+| **Embeddings** | MiniLM-L6-v2 via @xenova/transformers (local only, lazy-loaded) |
+| **AI Provider 1** | GROQ — Llama-3.3-70B (resume parse + LLM classify) |
+| **AI Provider 2** | Gemini — gemini-2.0-flash (essay gen + PDF parse) |
+| **Backend** | Supabase (Auth · Postgres · RLS · 5-min delta sync) |
+| **Sync Protocol** | Delta queue · last-write-wins · offline-safe |
+
+**Key build-time decisions:**
+- API keys bundled at build via Vite `import.meta.env` static replacement — end users NEVER enter API keys
+- Only GROQ and Gemini — no OpenAI, no Anthropic, no local models, no provider UI
+
+---
+
+## 5. Security & Privacy
+
+### Hard Rules (non-negotiable)
+
+1. **Form values never leave the browser** — Steps 1–5 are entirely local
+2. **Embeddings never synced** — recomputed per-device from text
+3. **No telemetry on form content** — usage metrics are local only (field counts, not values)
+4. **Sensitive domain blocklist** — banks/health/gov blocked by default (user can override)
+5. **Step 6 LLM sends only field labels** — never the user's actual values
+6. **No credit card / SSN patterns** — regex blocklist on learn path
+7. **Supabase RLS** — users can only read/write their own rows
+
+### Supabase Auth Security (Phase AF fix)
+Previously `client.auth.setSession()` was called on every sync operation, triggering a `_getUser` network validation round-trip. This caused a flood of `TypeError: Failed to fetch` errors on offline. **Fixed:** Bearer token is injected via `global.headers` at client creation time. No `setSession()` call = no validation round-trip = no flood.
+
+---
+
+## 6. File Structure
+
+```
+extension/src/
+├── content-script/
+│   ├── index.ts              ← Main waterfall, fill loops, learning, learning sweep
+│   ├── detector.ts           ← Field discovery (native + ARIA + radio/checkbox groups)
+│   ├── filler.ts             ← fillPlainInput (Level 1-3 cascade) + fillSelect + fillFileInput
+│   ├── combobox.ts           ← fillCombobox + fillButtonDropdown + optionMatches + findListbox
+│   ├── overlay.ts            ← Floating pill, field badges, ghost text, essay panel (Shadow DOM)
+│   ├── overlay-banner.ts     ← "Ready / Filling / Filled X/N" banner
+│   ├── ghost-text.ts         ← Per-field preview text overlay
+│   ├── form-fingerprinter.ts ← buildFingerprintInputs + mergeFingerprint
+│   ├── ats-templates.ts      ← Static ATS_TEMPLATES (5 ATSes, ~70 fields)
+│   ├── company-detector.ts   ← detectAts() + detectCompany() (cached per page)
+│   ├── memory-asset.ts       ← classifyAnswerKind() + getSeedAnswer()
+│   ├── option-embedding.ts   ← selectOptionByEmbedding() (MiniLM on options)
+│   ├── option-resolution-cache.ts ← Cache 3: option-text resolution
+│   ├── country-aliases.ts    ← expandCountryAliases(), resolveCountry()
+│   ├── value-aliases.ts      ← expandValueAliases() for gender/degree/work_auth/...
+│   ├── value-validation.ts   ← validateLearnedValue() — blocks garbage values
+│   ├── qa-cache.ts           ← rememberAnswer / getRememberedAnswer (localStorage)
+│   ├── messenger.ts          ← sendToBackground() typed message helper
+│   └── field-handlers/
+│       ├── registry.ts            ← HANDLERS array + resolveHandler()
+│       ├── types.ts               ← FieldHandler interface + FillContext
+│       ├── text-handler.ts        ← fillPlainInput fallback
+│       ├── select-handler.ts      ← fillSelect
+│       ├── combobox-handler.ts    ← fillCombobox (input-based ARIA combobox)
+│       ├── aria-combobox-handler.ts ← fillButtonDropdown (div/button combobox)
+│       ├── button-dropdown-handler.ts ← phone country picker
+│       ├── radio-group-handler.ts ← native radio groups
+│       ├── checkbox-group-handler.ts ← native checkbox groups
+│       ├── date-handler.ts        ← date/month/week inputs
+│       ├── aria-choice-handler.ts ← role="radio/checkbox/switch"
+│       └── contenteditable-handler.ts ← contenteditable + role="textbox"
+│
+├── background/
+│   ├── index.ts              ← Message router (all handler registrations)
+│   ├── auth-manager.ts       ← signIn/signOut/getSession/refreshSession
+│   ├── supabase-client.ts    ← getAuthClient (Bearer header, cached by token)
+│   ├── supabase-env.ts       ← ENV_SUPABASE_URL + ENV_SUPABASE_ANON_KEY
+│   ├── sync-engine.ts        ← pushSyncQueue + pullFromCloud + fingerprint sync
+│   ├── profile-store.ts      ← IndexedDB CRUD for profile_entries
+│   ├── field-learner.ts      ← inferCanonicalKey / inferDisplayLabel / inferCategory
+│   ├── llm-classifier.ts     ← Step 6 batch LLM prompt (GROQ/Gemini)
+│   └── answer-field.ts       ← ANSWER_FIELD handler (Gemini essay answer)
+│
+├── popup/
+│   ├── App.tsx               ← Router (Home/Profile/Resume/Settings/Answers/Login)
+│   └── components/
+│       ├── HomeScreen.tsx    ← Fill button + field count + fill ratio
+│       ├── ProfileScreen.tsx ← CRUD: edit/delete/alternatives with 10s undo
+│       ├── ResumeScreen.tsx  ← PDF upload + text paste + parsed preview
+│       ├── SettingsScreen.tsx ← autoSave toggle + sensitivity + About
+│       ├── AnswersScreen.tsx ← Q&A history viewer
+│       └── LoginScreen.tsx   ← Sign in / Sign up / Local-only escape
+│
+├── ai-providers/
+│   ├── groq.ts               ← GroqProvider (Llama-3.3-70B)
+│   ├── gemini.ts             ← GeminiProvider (gemini-2.0-flash, streaming)
+│   ├── factory.ts            ← AIProviderFactory singleton
+│   ├── types.ts              ← IAIProvider interface
+│   ├── config.ts             ← getProviderConfig / setAPIKey
+│   └── cost-tracker.ts       ← logCost / getTotalCost / getMonthlyCost
+│
+├── ml/
+│   ├── step5.ts              ← fieldEmbedText() + cosine similarity
+│   └── embedder.ts           ← MiniLM-L6-v2 via @xenova/transformers (lazy)
+│
+└── storage/
+    └── idb.ts                ← IndexedDB v5: field_cache, embeddings, documents,
+                                 form_fingerprints stores
+
+shared/
+└── types.ts                  ← ProfileEntry, Session, FieldSignature, MatchResult,
+                                 FormFingerprint, MessageType union, UserSettings
+```
+
+---
+
+## 7. Performance
+
+| Operation | Target | Notes |
 |-----------|--------|-------|
-| **Universal Form Detection** | ✅ Complete | Detects text, select, combobox, radio, checkbox, file inputs, button dropdowns on any website |
-| **Self-Learning Profile** | ✅ Complete | Learns answers from user as they fill forms; stores in chrome.storage.local + IndexedDB |
-| **Q→A Memory** | ✅ Complete | Question→Answer cache for non-profile questions (e.g., "Why do you want this job?") |
-| **Profile Filling** | ✅ Complete | Autofills profile fields (name, email, phone, etc.) from learned data |
-| **AI Essay Generation** | ✅ Complete | Uses Gemini/GROQ to synthesize personalized long-form answers |
-| **Company Detection** | ✅ Complete | Detects company name from page (JSON-LD, meta tags, title, h1) |
-| **Company-Aware Synthesis** | ✅ Complete | Generates answers mentioning the detected company |
-| **File Upload Automation** | ✅ Complete | Detects resume upload fields, auto-fills with stored document |
-| **Emoji Flag Stripping** | ✅ Complete | Converts "🇮🇳 +91" to just "+91" for phone country codes |
-| **Embedding-Based Matching** | ✅ Complete | Uses MiniLM for fuzzy field matching (synonym handling) |
-| **Option Resolution Cache** | ✅ Complete | Caches dropdown option text → canonical value mappings per domain |
-| **Extensible Field Handlers** | ✅ Complete | Registry pattern for adding new input types without editing existing code |
-| **Multi-Device Sync** | 🟡 Partial | Supabase backend ready; frontend UI incomplete |
-| **Custom Field Types** | ❌ Not Started | Angular Material, custom React components require manual first fill |
+| Form detection | <50ms | MutationObserver + 300ms quiet wait |
+| Waterfall Steps 1–4 | <10ms | All synchronous rules |
+| Step 5 (embedding) | ~30ms | Lazy-loaded, warm |
+| Step 6 (LLM) | ~500ms | Batch; only if Steps 1–5 fail |
+| Fill execution (50 fields) | <300ms | Level 1 native setter |
+| Dropdown fill (async search) | ~1s | Polls up to 820ms for options |
+| Essay generation (first token) | ~1.5s | Gemini streaming |
+| MiniLM first load | ~2s | 22MB, lazy, cached after |
+| Popup open | <150ms | React + glassmorphism UI |
+| Cloud sync (push) | ~200ms/batch | Delta only |
 
-### Vision
-> "Your profile, on every form. Learns as you go. Thinks when it matters."
-
-Every field on every form gets filled correctly without the user typing a single character. The extension learns continuously and adapts to company context.
-
-### Business Value
-- **Time Saved:** 25+ minutes per job application × 50 applications/month = 20 hours/month saved per user
-- **Conversion Uplift:** Users who have AI-generated essays for motivation questions are more likely to pass screening
-- **Retention Driver:** Learning system creates lock-in (more forms filled = more data = better fills)
-- **Monetization Potential:** Free tier (5 AI essays/month); Pro tier (unlimited essays, $9.99/month)
+**SPA handling:** `scheduleScan()` uses a 300ms quiet-period + 2s max ceiling so route changes in SPAs are handled without scanning on every DOM mutation.
 
 ---
 
-## 3. Elevator Pitches
+## 8. Known Limitations
 
-### 30 Seconds
-SmartFillAI auto-fills any form using a personal profile you build once. It learns what you type, remembers your answers, and uses AI for the hard questions.
-
-### 1 Minute
-Traditional autofill (Chrome, browsers) only works on sites they've already indexed. SmartFillAI works **on any website** by detecting form structure in real-time. It learns your common answers (name, email, phone, company history, etc.) and replays them. For questions it doesn't have an answer for, it uses Gemini/GROQ to generate personalized essays that mention the specific company you're applying to.
-
-### 3 Minutes
-SmartFillAI is a Chrome extension for job seekers tired of filling the same fields 100 times on different job portals. Here's how it works:
-
-1. **Detects** — It runs on every page and identifies all form fields (text inputs, dropdowns, checkboxes, file uploads, etc.)
-2. **Learns** — When you fill a field manually, the extension learns: "Oh, this field is asking for phone number, and you put +91-XXXX." It stores that in a personal profile.
-3. **Fills** — On the next job portal, it finds the phone field automatically and fills it with your stored number. No typing.
-4. **Thinks** — For harder questions ("Why do you want this job?"), it uses AI to write a personalized essay that mentions the company you're applying to.
-5. **Syncs** — Optionally syncs your profile across devices via cloud backup.
-
-All your data stays on your device unless you explicitly ask the extension to sync to the cloud. No tracking, no selling data.
+| Limitation | Reason | Workaround |
+|------------|--------|-----------|
+| Canvas-rendered inputs (PDFjs, some custom editors) | No DOM element | None — mark FILL_FAILED |
+| Cross-origin iframes (same-origin only filled) | Browser security | Detect ATS via iframe `src` attribute (we can see that) |
+| Captcha / OTP fields | Intentionally skipped | User fills manually |
+| No auto-submit | Intentional — security boundary | User clicks submit |
+| Google Places lag on city fields | Async API call | Polling loop up to 820ms |
+| computedRole/computedName fallback | Chrome 105+ only | Graceful fallback to getAttribute + resolveLabel |
+| GROQ + Gemini only | User policy | Provider interface is abstracted |
 
 ---
 
-## 4. Product Story
+## 9. Remaining Work (Post Phase AG)
 
-### User Journey
-**Sarah, a Software Engineer**
+### Immediate (manual steps)
+- [ ] **Push 28 local commits to origin/main** (`git push`) — user must trigger
+- [ ] **Reload extension** in `chrome://extensions` after push to test latest build
+- [ ] **Smoke test on Databricks** — set `window.__SFA_DEBUG = true` in PAGE DevTools, verify `[SmartFillAI] platform:detected ats=greenhouse via=query_param`
 
-Sarah is applying to jobs and has filled the same "Expected Salary" and "Current Company" fields 47 times. On portal #48 (Happiest Minds), she:
-1. Opens the application form
-2. SmartFillAI popup appears: "Found 15 fields"
-3. She clicks "Autofill"
-4. 14 fields fill automatically (name, email, phone, expected salary, upload resume, gender, etc.)
-5. One field is empty: "Why do you want to work at Happiest Minds?"
-6. She clicks "Generate with AI"
-7. The extension reads her profile ("Software Engineer, 5 years experience, interested in distributed systems"), detects she's applying to Happiest Minds, and generates: "I'm excited about Happiest Minds because of your work in scalable microservices architecture. My experience in distributed systems at my current role (Amazon) makes me a strong fit for your platform engineering team."
-8. She clicks "Use This" — the answer goes into the form
-9. She submits the application in 90 seconds instead of 15 minutes
+### Short-term (1–2 sessions)
+- [ ] **C.5** — Q&A cache invalidation when user edits profile or uploads new resume
+- [ ] **C.6** — Build + strip any remaining diagnostic logs + final commit
+- [ ] **Chrome Web Store prep (AB.5)** — Multi-browser smoke test: Brave + Edge
+- [ ] **Chrome Web Store submission (AB.6)** — Upload extension + screenshots + listing copy
 
-**On the next portal (LinkedIn)**, when she encounters "Why do you want this position?", SmartFillAI retrieves her answer from #48, detects she's now applying to LinkedIn, and generates a LinkedIn-specific version referencing their social graph platform.
-
-### Outcome
-Sarah applies to 60 jobs in the time it would have taken her to apply to 8. Her chances of getting a screen increase because her essays are personalized and articulate.
+### Medium-term feature backlog
+- [ ] **A.9/A.10** — Resume RAG: chunk + embed resume → LLM answer with retrieved context
+- [ ] **A.11** — Reviewable Q&A cache in popup (AnswersScreen enhancements)
+- [ ] **B.4/B.5** — Gemini ANSWER_FIELD with RAG + question embedding fuzzy match
+- [ ] **Public crowdsourced field registry** — deferred (trust/abuse model unsolved)
+- [ ] **Pro tier** ($9/month): multi-resume, unlimited essays, company research
+- [ ] **Firefox port** (WebExtensions API)
 
 ---
 
-## 5. Product Architecture
+## 10. Version History
 
-### High-Level Architecture
+| Version | Date | Phases | Key Changes |
+|---------|------|--------|-------------|
+| 1.3.0 | 2026-06-25 | AF, AG | Pill-overwrite fix, dropdown learning always-prompt, async dropdown polling, Supabase auth flood fix |
+| 1.2.0 | 2026-06-24 | AD, AE | Form fingerprinting, ATS template seeding, embedded ATS detection (Databricks fix), char-by-char retry |
+| 1.1.0 | 2026-06-21 | W, X–Z, AA, AB | ARIA detection, glass UI, lazy MiniLM, SPA fix, Web Store prep |
+| 1.0.0 | 2026-06-18 | G–U | Field-handler registry, radio/checkbox, company-aware essays, resume Q&A, date handler, profile completeness |
+| 0.9.0 | 2026-06-10 | A–F | Option embedding, value aliases, country aliases, Q&A cache, LLM fill tier, backend-only AI keys |
+| 0.8.0 | 2026-06-01 | initial | Core waterfall (Steps 1–6), autofill, learning, Supabase sync, resume parsing, essay generation |
 
-```mermaid
-flowchart LR
-    subgraph Browser["Chrome Browser"]
-        ContentScript["Content Script<br/>(Form Detection & Filling)"]
-        Popup["Popup UI<br/>(React)"]
-        Storage["Local Storage<br/>(chrome.storage.local)"]
-        IDB["IndexedDB<br/>(Embeddings, Docs)"]
-    end
-    
-    subgraph ServiceWorker["Background Service Worker"]
-        BGIndex["index.ts<br/>(Message Router)"]
-        FieldLearner["field-learner.ts<br/>(Canonical Key Inference)"]
-        ProfileStore["profile-store.ts<br/>(Profile CRUD)"]
-        AnswerField["answer-field.ts<br/>(AI Synthesis)"]
-        SyncEngine["sync-engine.ts<br/>(Cloud Sync)"]
-    end
-    
-    subgraph AI["AI Providers"]
-        Gemini["Gemini<br/>(Primary)"]
-        GROQ["GROQ<br/>(Fallback)"]
-    end
-    
-    subgraph Cloud["Supabase Cloud"]
-        Auth["Auth"]
-        Database["Profile DB"]
-        Storage2["Document Storage"]
-    end
-    
-    ContentScript -->|Message| BGIndex
-    Popup -->|Message| BGIndex
-    BGIndex --> FieldLearner
-    BGIndex --> ProfileStore
-    BGIndex --> AnswerField
-    BGIndex --> SyncEngine
-    ProfileStore --> Storage
-    ProfileStore --> IDB
-    AnswerField --> Gemini
-    AnswerField --> GROQ
-    SyncEngine --> Cloud
-    ContentScript --> Storage
-    ContentScript --> IDB
+---
+
+## Appendix A: Environment Variables
+
+```bash
+# .env.local — never committed, bundled at build time
+VITE_SUPABASE_URL=https://cfpitvfncswfacogdehl.supabase.co
+VITE_SUPABASE_ANON_KEY=<anon key>
+VITE_GROQ_API_KEY=gsk_4Mqk...
+VITE_GEMINI_API_KEY=AQ.Ab8RN6...
 ```
 
-### Logical Architecture (Waterfall Pattern)
-
-```mermaid
-flowchart TD
-    FormDetected["Form Detected"]
-    ExtractFields["Extract All Fields<br/>(detector.ts)"]
-    MatchFields["Match Each Field<br/>(matcher.ts)"]
-    
-    MatchStep1["Step 1: SKIP<br/>(passwords, hidden fields)"]
-    MatchStep2["Step 2: CACHE<br/>(domain-level cache)"]
-    MatchStep3["Step 3: ESSAY<br/>(long-form detection)"]
-    MatchStep4["Step 4: RULES<br/>(200+ regex patterns)"]
-    MatchStep5["Step 5: EMBEDDING<br/>(MiniLM fuzzy match)"]
-    MatchStep6["Step 6: LLM<br/>(AI classification - rare)"]
-    
-    FillField["Fill Field<br/>(field-handlers registry)"]
-    LearnField["Learn Field<br/>(field-learner.ts)"]
-    
-    FormDetected --> ExtractFields
-    ExtractFields --> MatchFields
-    MatchFields --> MatchStep1
-    MatchStep1 -->|Not skipped| MatchStep2
-    MatchStep2 -->|No cache| MatchStep3
-    MatchStep3 -->|Not essay| MatchStep4
-    MatchStep4 -->|No match| MatchStep5
-    MatchStep5 -->|No match| MatchStep6
-    MatchStep1 -->|Match found| FillField
-    MatchStep2 -->|Match found| FillField
-    MatchStep3 -->|Match found| FillField
-    MatchStep4 -->|Match found| FillField
-    MatchStep5 -->|Match found| FillField
-    MatchStep6 -->|Match found| FillField
-    FillField --> LearnField
-    
-    style FillField fill:#90EE90
-    style LearnField fill:#FFB6C1
-```
-
-### Component Responsibilities
-
-| Component | File | Responsibility |
-|-----------|------|-----------------|
-| **Detector** | `detector.ts` | Finds all form fields in DOM; extracts labels, types, attributes, option values |
-| **Matcher** | `matcher.ts` | Classifies each field (name, email, phone, gender, etc.) using 6-step waterfall |
-| **Field Handlers Registry** | `field-handlers/registry.ts` | Routes each field type (text, select, combobox, radio, checkbox, file, button-dropdown) to correct fill logic |
-| **Content Script** | `content-script/index.ts` | Detects form changes, triggers fill/learn, manages Q→A memory, captures user clicks |
-| **Background Service Worker** | `background/index.ts` | Receives messages from content script, routes to profile store, AI providers, sync engine |
-| **Profile Store** | `profile-store.ts` | CRUD for profile entries; tracks priority, use count, learned date |
-| **Q→A Cache** | `qa-cache.ts` | Stores question→answer pairs for non-profile questions with priority levels |
-| **Field Learner** | `field-learner.ts` | Infers canonical keys (name → first_name); validates values before storing |
-| **Answer Field (AI)** | `answer-field.ts` | Calls Gemini/GROQ to synthesize personalized answers for unknown fields |
-| **Company Detector** | `company-detector.ts` | Extracts company name from page (JSON-LD, meta tags, title, h1, hostname) |
-| **Memory Asset** | `memory-asset.ts` | Classifies answers as factual (yes/no, dropdown) vs narrative (essays); manages answer kind tags |
-| **Option Embedding** | `option-embedding.ts` | Uses MiniLM embeddings to find closest matching option when exact text doesn't match |
-| **Popup UI** | `popup/App.tsx` | React UI showing profile, Q→A cache, settings, documents |
+End users NEVER see or enter these keys. They are replaced by Vite's static define transform at build time (`import.meta.env.VITE_*`).
 
 ---
 
-## 6. Repository Structure
+## Appendix B: Build & Test
 
-```
-ditto/
-├── extension/
-│   ├── src/
-│   │   ├── ai-providers/                    # AI abstraction layer (Gemini, GROQ, OpenAI, Anthropic, local)
-│   │   │   ├── factory.ts                   # Provider factory pattern
-│   │   │   ├── gemini.ts                    # Google Gemini implementation
-│   │   │   ├── groq.ts                      # GROQ implementation (default)
-│   │   │   ├── config.ts                    # Provider config management
-│   │   │   └── cost-tracker.ts              # AI cost tracking per provider
-│   │   ├── background/                      # Service worker (runs all the time)
-│   │   │   ├── index.ts                     # Message router, lifecycle handlers
-│   │   │   ├── field-learner.ts             # Canonical key inference, value normalization
-│   │   │   ├── profile-store.ts             # Profile entry CRUD
-│   │   │   ├── answer-field.ts              # AI synthesis orchestrator
-│   │   │   ├── essay-generator.ts           # Essay generation (deprecated, use answer-field)
-│   │   │   ├── auth-manager.ts              # Supabase authentication
-│   │   │   ├── sync-engine.ts               # Cloud sync orchestration
-│   │   │   ├── resume-parser.ts             # Parse resume PDF/text → profile entries
-│   │   │   ├── llm-classifier.ts            # Batch field classification via LLM
-│   │   │   └── settings-store.ts            # Extension settings (provider, API keys)
-│   │   ├── content-script/                  # Injects into every page
-│   │   │   ├── index.ts                     # Main: detect forms, learn, fill, listen
-│   │   │   ├── detector.ts                  # Extract field info from DOM
-│   │   │   ├── matcher.ts                   # Waterfall field classification (6 steps)
-│   │   │   ├── field-handlers/              # Pluggable field type handlers
-│   │   │   │   ├── types.ts                 # FieldHandler interface
-│   │   │   │   ├── registry.ts              # Handler dispatch registry
-│   │   │   │   ├── text-handler.ts          # Plain text input
-│   │   │   │   ├── select-handler.ts        # HTML <select>
-│   │   │   │   ├── combobox-handler.ts      # Searchable combobox (react-select, custom)
-│   │   │   │   ├── radio-group-handler.ts   # Grouped radio buttons
-│   │   │   │   ├── checkbox-group-handler.ts # Multiple checkboxes (multi-select)
-│   │   │   │   └── button-dropdown-handler.ts # Button-styled dropdown (Workday, Lever)
-│   │   │   ├── filler.ts                    # Field filling orchestrator
-│   │   │   ├── combobox.ts                  # Combobox detection and filling logic
-│   │   │   ├── qa-cache.ts                  # Q→A memory (question→answer with priorities)
-│   │   │   ├── memory-asset.ts              # Answer classification (factual vs narrative)
-│   │   │   ├── company-detector.ts          # Extract company name from page
-│   │   │   ├── country-aliases.ts           # Map country names ↔ codes
-│   │   │   ├── value-aliases.ts             # Map field values (M/F → Male/Female, etc.)
-│   │   │   ├── value-validation.ts          # Validate learned values before applying
-│   │   │   ├── option-embedding.ts          # Fuzzy option matching via MiniLM
-│   │   │   ├── option-resolution-cache.ts   # Cache option text → resolved text
-│   │   │   ├── ghost-text.ts                # Show what will be filled (UI)
-│   │   │   ├── overlay.ts                   # Floating panel showing autofill status
-│   │   │   ├── overlay-banner.ts            # Toast notification
-│   │   │   ├── messenger.ts                 # chrome.runtime.sendMessage wrapper
-│   │   │   └── content.css                  # Shadow DOM styles
-│   │   ├── ml/                              # Machine learning (local)
-│   │   │   ├── embedder.ts                  # Load + use MiniLM model for embeddings
-│   │   │   └── step5.ts                     # Embedding-based field matching
-│   │   ├── popup/                           # React popup UI
-│   │   │   ├── App.tsx                      # Main app router
-│   │   │   ├── components/
-│   │   │   │   ├── HomeScreen.tsx           # Dashboard
-│   │   │   │   ├── ProfileScreen.tsx        # View/edit profile entries
-│   │   │   │   ├── AnswersScreen.tsx        # View/edit Q→A cache
-│   │   │   │   ├── DocumentsScreen.tsx      # Manage resume files
-│   │   │   │   ├── LoginScreen.tsx          # Supabase auth
-│   │   │   │   ├── ResumeScreen.tsx         # Resume upload/parsing
-│   │   │   │   └── SettingsScreen.tsx       # AI provider, API keys
-│   │   │   └── utils/
-│   │   │       ├── canonicalKeys.ts         # List of all supported profile fields
-│   │   │       └── messages.ts              # Message type definitions
-│   │   ├── storage/
-│   │   │   └── idb.ts                       # IndexedDB schema + CRUD (embeddings, documents, Q&A embeddings)
-│   │   └── __tests__/                       # Unit tests
-│   ├── public/
-│   │   └── icons/                           # PNG icons (16x16, 48x48, 128x128)
-│   ├── manifest.json                        # Chrome MV3 manifest
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts
-│   └── dist/                                # Built extension (after npm run build)
-├── docs/
-│   ├── universal-autofill-implementation.md # 20-section spec (original)
-│   └── CONTEXT.md                           # Developer quick reference
-├── README.md                                # User-facing overview
-├── PRODUCT_DOCUMENTATION.md                 # This file
-└── CLAUDE.md                                # Claude Code instructions (if exists)
-```
-
----
-
-## 7. Complete Feature Inventory
-
-### Implemented Features (Production-Ready)
-
-#### Field Detection & Type Support
-
-| Field Type | Detector | Filler | Learner | Status |
-|-----------|----------|--------|---------|--------|
-| **Text Input** | ✅ | ✅ | ✅ | Complete |
-| **HTML Select** | ✅ | ✅ | ✅ | Complete |
-| **Combobox** (searchable dropdown) | ✅ | ✅ | ✅ | Complete |
-| **Radio Group** | ✅ | ✅ | ✅ | Complete |
-| **Checkbox Group** | ✅ | ✅ | ✅ | Complete |
-| **File Input** | ✅ | ✅ | ✅ | Complete |
-| **Button Dropdown** (Workday, Lever) | ✅ | ✅ | ✅ | Complete |
-| **Custom React Components** | ❌ | ❌ | ❌ | Not Supported |
-| **Angular Material mat-select** | 🟡 Partial | ❌ | ❌ | Partial (manual first fill required) |
-
-#### Field Matching (Waterfall)
-
-| Step | Method | Speed | Coverage | Implemented |
-|------|--------|-------|----------|-------------|
-| 1 | SKIP (passwords, hidden, captcha) | <1ms | 10-15% | ✅ |
-| 2 | Domain cache lookup | ~1ms | 70% (after week) | ✅ |
-| 3 | Essay detection (long-form) | ~1ms | 5% | ✅ |
-| 4 | Text pattern rules (200+) | ~5ms | 80% | ✅ |
-| 5 | Embedding similarity (MiniLM) | ~30ms | +12% | ✅ |
-| 6 | LLM batch classification | ~500ms | +5% | ✅ |
-
-#### Data Storage & Memory
-
-| Feature | Mechanism | Scope | Status |
-|---------|-----------|-------|--------|
-| **Profile** | chrome.storage.local + IndexedDB | Device-local | ✅ |
-| **Q→A Cache** | chrome.storage.local | Device-local | ✅ |
-| **Q&A Embeddings** | IndexedDB | Device-local | ✅ |
-| **Embedding Cache** | IndexedDB | Device-local | ✅ |
-| **Domain Field Cache** | IndexedDB | Device-local | ✅ |
-| **Documents** (resumés) | IndexedDB + Supabase Storage | Device + Cloud | ✅ Local, 🟡 Cloud |
-| **Profile Sync** | Supabase | Cloud | 🟡 Partial |
-
-#### AI & Synthesis
-
-| Feature | Provider(s) | Status | Notes |
-|---------|------------|--------|-------|
-| **Essay Generation** | Gemini (primary), GROQ (fallback) | ✅ | Generates personalized answers for unknown fields |
-| **Company Detection** | Local (JSON-LD, meta, title, h1, hostname) | ✅ | Extracts company context for synthesis |
-| **Company-Aware Synthesis** | Gemini + GROQ | ✅ | Generates answers mentioning the company |
-| **Factual vs Narrative Classification** | Local rule engine | ✅ | Distinguishes yes/no answers from essays |
-| **Resume Parsing** | Local (text regex) + Gemini (structured extraction) | ✅ | Extracts work experience, education, skills from resume |
-| **Cost Tracking** | Local arithmetic | ✅ | Tracks total cost per provider, per month |
-
-#### Integrations
-
-| Service | Type | Purpose | Status |
-|---------|------|---------|--------|
-| **Gemini API** | REST | AI synthesis (primary) | ✅ |
-| **GROQ API** | REST | AI synthesis (fallback) | ✅ |
-| **Supabase Auth** | Backend Service | Cloud sync, user accounts | 🟡 Partial |
-| **Supabase Database** | Backend Database | Store synced profiles | 🟡 Partial |
-| **Supabase Storage** | Object Storage | Store uploaded resumés | 🟡 Partial |
-
-### Partially Implemented Features
-
-#### Multi-Device Sync
-- **Backend:** Supabase schema ready, sync-engine.ts written
-- **Missing:** Conflict resolution logic, periodic sync UI, sync status indicator in popup
-- **Impact:** Users can't yet backup profiles to cloud
-
-#### Resume Upload
-- **Works:** File detection, upload to IndexedDB, display in popup
-- **Missing:** Supabase upload, auto-extraction of work history
-- **Impact:** Resumés stay device-local only
-
-#### Custom Field Type Support
-- **How to Add:** Write new handler (e.g., `date-picker-handler.ts`), register in `field-handlers/registry.ts`
-- **Example:** Angular Material mat-select requires custom portal-aware listbox detection
-- **Current:** Not documented for users; requires code change
-
-### Known Limitations & Bugs
-
-#### Platform-Specific Issues
-
-| Portal | Issue | Workaround | Severity |
-|--------|-------|-----------|----------|
-| **Happiest Minds** | Angular Material mat-select not auto-detected | Fill manually on first visit, then learned | 🟠 Medium |
-| **Happiest Minds** | Q→A cache can get corrupted if "Current Location" fails to fill | User manually clears Q→A cache entry | 🟠 Medium |
-| **Greenhouse** | Expected CTC field stored under junk canonical key on some forms | Fixed in commit ba88646 | ✅ Resolved |
-| **All** | Checkbox partial fill (e.g., only first checkbox checked) | Fixed in commit ba88646 (superset-replace) | ✅ Resolved |
-
-#### Feature Gaps
-
-- **No custom UI inputs** (date pickers, color pickers) — defaults to plain text
-- **No JavaScript-heavy frameworks** (Vue with custom components) — requires Vue.js integration
-- **No PDF form support** — only web forms
-- **No PDF resume extraction** — only text parsing via Gemini
-- **No multi-language support** — English only
-
----
-
-## 8. Supported Websites (Tested Portals)
-
-| Portal | Field Types | Match Rate | Notes |
-|--------|------------|-----------|-------|
-| **Greenhouse** | text, select, combobox, checkbox, file | 95%+ | Most widely supported; good label quality |
-| **Workday** | text, button-dropdown, select, radio | 90%+ | Button-dropdown requires custom handler |
-| **Lever** | text, select, combobox, radio | 92%+ | Clean label structure |
-| **eBay** | text, select, combobox, checkbox, file | 88%+ | Some custom fields not matched |
-| **Happiest Minds** | text, mat-select, checkbox, file, combobox | 75% | Angular Material portal not fully supported |
-| **Avathon** | text, select, combobox, radio, checkbox | 90%+ | Greenhouse-based, works well |
-| **LinkedIn** | text, textarea, select | 85% | Limited form types offered |
-
----
-
-## 9. Data Flows & Key Workflows
-
-### Workflow: Form Auto-fill
-
-```mermaid
-sequenceDiagram
-    participant User as User
-    participant Page as Webpage
-    participant CS as Content Script
-    participant BG as Background Service Worker
-    participant AI as AI Provider
-    
-    User->>Page: Open job application form
-    CS->>CS: Detect form fields (detector.ts)
-    CS->>BG: MATCH_FIELDS message
-    BG->>BG: Waterfall match each field (matcher.ts)
-    BG->>BG: Find profile entry for matched canonical keys
-    BG-->>CS: Return match results
-    CS->>CS: Dispatch to field handler (registry.ts)
-    CS->>CS: Fill each field with profile value or AI-generated value
-    Note over CS: Fields with profile data = instant fill<br/>Fields with no data = trigger AI
-    CS->>BG: ANSWER_FIELD message (for unknown fields)
-    BG->>AI: Request synthesis (e.g., Gemini)
-    AI-->>BG: Generated answer
-    BG-->>CS: Synthesized answer
-    CS->>CS: Fill field with AI answer
-    CS->>BG: LEARN_FIELD message (capture filled value)
-    BG->>BG: Infer canonical key, validate, store in profile
-    BG-->>CS: Learned
-```
-
-### Workflow: Learning a New Answer
-
-```mermaid
-sequenceDiagram
-    participant User as User
-    participant Field as Form Field
-    participant CS as Content Script
-    participant BG as Background Service Worker
-    participant Store as ProfileStore
-    
-    User->>Field: Manually type answer (e.g., "+91-XXXXXXXXXX")
-    Field->>CS: Input/change event
-    CS->>CS: Detect change via event listener
-    CS->>CS: Capture current value via field handler
-    Note over CS: After 200ms debounce
-    CS->>BG: LEARN_FIELD message {field, value}
-    BG->>BG: field-learner.ts: infer canonical key from label
-    alt Canonical key inferred
-        BG->>Store: Add entry {canonical_key: "phone_number", value: "+91-XXXXXXXXXX", priority: 0, learned_date: now}
-        Store-->>BG: Stored
-    else Unrecognized field (no canonical key)
-        BG->>Store: Store in Q→A cache instead {question: "Phone Number", answer: "+91-XXXXXXXXXX"}
-    end
-    BG-->>CS: LEARN_FIELD_RESPONSE
-```
-
-### Workflow: AI Synthesis for Unknown Field
-
-```mermaid
-sequenceDiagram
-    participant CS as Content Script
-    participant BG as Background Service Worker
-    participant FG as Field Learner
-    participant AA as Answer Field
-    participant AI as Gemini/GROQ
-    
-    CS->>BG: ANSWER_FIELD {question: "Why do you want to work here?", canonicalKey: null}
-    BG->>FG: Check: is this a recognized profile field?
-    alt Recognized field
-        FG->>AA: Route to profile-based synthesis
-    else Unknown field (narrative)
-        BG->>BG: Check Q→A cache for prior answer
-        alt Found prior answer
-            BG-->>CS: Return cached answer
-        else No prior answer
-            BG->>AA: Trigger AI synthesis
-            AA->>BG: Get profile (work history, skills, summary)
-            AA->>BG: Get company name (from company-detector)
-            AA->>AI: Request synthesis with context {profile, company}
-            AI-->>AA: Generated answer
-            AA->>BG: Cache in Q→A {question, answer, source: "llm"}
-            BG-->>CS: Return generated answer
-        end
-    end
-```
-
----
-
-## 10. Database & Storage Architecture
-
-### Chrome Storage (Local)
-
-```typescript
-// chrome.storage.local (synchronous read, async write)
-{
-  // Profile: list of entries
-  "ditto:profile": [
-    {
-      id: "uuid",
-      canonical_key: "first_name",
-      value: "Prasanna",
-      priority: 0,
-      use_count: 12,
-      learned_date: 1718736000000,
-      last_used: 1718822400000,
-      source: "user" | "gemini" | "groq"
-    },
-    ...
-  ],
-  
-  // Q→A Cache: question → [answers with priority]
-  "ditto:qa_cache_v1": {
-    "why do you want to work here": {
-      answers: [
-        { value: "I'm passionate about...", source: "user", priority: 0 },
-        { value: "The company's mission...", source: "llm", priority: 1 }
-      ]
-    }
-  },
-  
-  // Settings
-  "ditto:settings": {
-    ai_provider: "gemini",
-    groq_api_key: "gsk_xxx...",
-    gemini_api_key: "...",
-    enable_cloud_sync: false
-  }
-}
-```
-
-### IndexedDB (Asynchronous, Large Data)
-
-```typescript
-// Stores embeddings, documents, caches
-const schema = {
-  stores: {
-    // Embedding vectors for options (for fuzzy matching)
-    "qa_embeddings": {
-      keyPath: "id",
-      indexes: ["question_norm", "timestamp"]
-    },
-    
-    // Resolved option text cache (per domain)
-    "field_cache": {
-      keyPath: ["domain", "option_text"],
-      indexes: ["domain", "use_count", "timestamp"]
-    },
-    
-    // Documents (resumés, etc.)
-    "documents": {
-      keyPath: "id",
-      indexes: ["type", "filename", "created"]
-    },
-    
-    // Document bytes (separate for large blobs)
-    "document_bytes": {
-      keyPath: "id"
-    }
-  }
-}
-```
-
-### Supabase (Cloud, Optional)
-
-**Schema** (partially implemented):
-
-```sql
--- Users (managed by Auth)
--- profiles table
-CREATE TABLE profiles (
-  id UUID PRIMARY KEY,
-  user_id UUID REFERENCES auth.users,
-  profile_data JSONB,
-  last_sync TIMESTAMP,
-  synced_at TIMESTAMP
-);
-
--- Documents (resumés, etc.)
-CREATE TABLE documents (
-  id UUID PRIMARY KEY,
-  user_id UUID REFERENCES auth.users,
-  filename TEXT,
-  mime_type TEXT,
-  created_at TIMESTAMP
-);
--- Actual bytes stored in storage bucket "documents"
-
--- Q&A Cache (optional cloud backup)
-CREATE TABLE qa_cache (
-  id UUID PRIMARY KEY,
-  user_id UUID REFERENCES auth.users,
-  question_norm TEXT,
-  answer TEXT,
-  source TEXT,
-  priority INT
-);
-```
-
----
-
-## 11. Authentication & Authorization
-
-### Current Status
-🟡 **Infrastructure ready, not enforced**
-
-- Supabase Auth configured in `auth-manager.ts`
-- Login screen in popup, but optional (users can ignore)
-- No API key protection for Gemini/GROQ (stored in extension, not backend)
-- Cloud sync disabled by default (feature incomplete)
-
-### Flow
-1. User clicks "Login" in popup
-2. Opens Supabase auth modal
-3. After login, stores `session` in chrome.storage
-4. Subsequent SYNC messages include auth header
-
-### Limitations
-- **No per-user API rate limiting** — all users share single Gemini/GROQ quota
-- **API keys visible in browser** — not ideal for production (should move to backend proxy)
-- **No feature flags or RBAC** — all users have same permissions
-
----
-
-## 12. Technical Debt & Known Issues
-
-### Critical
-
-| Issue | Location | Impact | Fix Effort |
-|-------|----------|--------|-----------|
-| **API keys in extension** | `.env.local`, background/index.ts | Security risk for production | High |
-| **Diagnostic logs not stripped** | `[SFA-DIAG]` throughout code | Users see internal logs | Low |
-| **No error handling for offline** | content-script/index.ts | Extension breaks if network fails | Medium |
-
-### High Priority
-
-| Issue | Location | Impact | Fix Effort |
-|-------|----------|--------|-----------|
-| **Angular Material not detected** | detector.ts, combobox.ts | 25% of Happiest Minds fields unfilled | High |
-| **Q→A cache can get corrupted** | qa-cache.ts | Needs manual clearing | Medium |
-| **Resume PDF extraction not tested** | resume-parser.ts | Feature incomplete | Medium |
-| **No conflict resolution for sync** | sync-engine.ts | Multi-device sync will fail | High |
-
-### Medium Priority
-
-| Issue | Location | Impact | Fix Effort |
-|-------|----------|--------|-----------|
-| **No pagination in popup lists** | popup/components/AnswersScreen.tsx | UX degrades with 100+ answers | Low |
-| **No bulk delete for Q→A** | popup/components/AnswersScreen.tsx | Manual cleanup tedious | Low |
-| **Field handlers not documented** | extension/src/content-script/field-handlers/ | Developers can't add types | Low |
-| **No analytics or usage tracking** | — | Can't measure user engagement | Medium |
-
----
-
-## 13. Security Review
-
-### Strengths
-✅ **Local-first architecture** — Form data never touches the internet unless user clicks "Generate"  
-✅ **No user tracking** — No analytics, no session logging beyond basic activity  
-✅ **Encrypted storage option** — Supabase supports encryption at rest  
-✅ **No third-party domains** — Only calls Gemini/GROQ, which are auth'd  
-
-### Risks
-🔴 **API keys in browser** — Gemini/GROQ keys visible in extension storage, can be extracted  
-🔴 **No HTTPS enforcement** — Content script runs on `<all_urls>`, including http://  
-🔴 **No CSP** — Manifest CSP is minimal (wasm-unsafe-eval for transformers.js)  
-🟠 **Supabase sync not encrypted** — Profile data sent in plain JSON (TLS only)  
-🟠 **No rate limiting** — No per-IP or per-user limit on API calls  
-
-### Recommendations
-1. **Move API calls to backend proxy** — Only backend should hold API keys
-2. **Add HTTPS-only mode** — Warn if user is on http:// form
-3. **Encrypt sensitive profile fields** — SSN, salary, etc. at rest in IndexedDB
-4. **Add user consent for cloud sync** — Clear warning about data leaving browser
-5. **Implement request signing** — Prove requests from extension, not attacker
-
----
-
-## 14. Performance Analysis
-
-### Latency Profile
-
-| Operation | Latency | Notes |
-|-----------|---------|-------|
-| Form detection | ~200ms | Depends on DOM size |
-| Field matching (per field) | 5-50ms | Waterfall: mostly 5ms, embedding is 30ms |
-| Filling 15 fields | ~500ms | Parallel + sequential DOM updates |
-| AI essay generation | 1-3s | Network + Gemini inference |
-| Learning a field | ~50ms | Validation + storage write |
-
-**Total form fill time:** 1-4 seconds (95% is waiting for AI)
-
-### Scalability Concerns
-
-| Concern | Current State | Limit |
-|---------|---------------|-------|
-| **Profile size** | Tested up to 200 entries | No known limit; probably OK to 10k |
-| **Q→A cache** | Tested up to 500 questions | IndexedDB limit ~50MB |
-| **Daily API calls** | ~5 essays/day @ $0.001 each | Gemini free tier: 60 calls/day; GROQ: unlimited |
-| **Concurrent users** | Single-user extension | No backend concurrency |
-
-### Memory Usage
-- **Content script:** ~5-10 MB (depends on page DOM size)
-- **Service worker:** ~3-5 MB (mostly embeddings model cached)
-- **Total:** ~8-15 MB per tab
-
----
-
-## 15. Observability & Logging
-
-### Diagnostic Logging
-- **Format:** `[SFA-DIAG]` prefix on console.log
-- **Locations:** Scattered throughout code (not centralized)
-- **Production:** Should be removed before Web Store release
-- **Current:** Enabled by default (no switch)
-
-### Metrics Tracked
-- **AI Cost** — Per provider, per month (in cost-tracker.ts)
-- **Usage count** — How many times each profile entry was used
-- **Cache hit rate** — Field cache effectiveness per domain (not visible to user)
-
-### Missing Observability
-- No error tracking (errors logged to console only)
-- No user funnel analytics (can't measure drop-off in autofill)
-- No performance monitoring (no timings recorded)
-- No field-match success rate dashboard
-
----
-
-## 16. Deployment Architecture
-
-### Local Development
 ```bash
 cd extension
-npm install
-npm run dev
-# Opens http://localhost:5173 with HMR
-# Load dist/ as unpacked extension
+npm run build        # TypeScript check + Vite production build → dist/
+npm run dev          # Dev with HMR (for popup development)
+npm run type-check   # TypeScript only, no Vite
+npm test             # Jest suite (field-learner, detector, auth, providers)
 ```
 
-### Build Process
-```bash
-npm run build
-# Runs: tsc && vite build
-# Outputs: extension/dist/
-# Ready for: chrome://extensions → Load unpacked
+**Load unpacked:** Chrome → `chrome://extensions` → Developer mode → Load unpacked → select `extension/dist/`
+
+---
+
+## Appendix C: Debug Mode
+
+Set in the PAGE's DevTools console (not the popup or background SW):
+```javascript
+window.__SFA_DEBUG = true
 ```
 
-### Production Readiness Checklist
-- ❌ API keys moved to backend proxy
-- ❌ Diagnostic logs stripped
-- ❌ Error handling for offline/failures
-- ❌ Performance audit (Lighthouse)
-- ❌ Security audit (OWASP, CSP)
-- ❌ Accessibility audit (a11y)
-- ❌ Legal review (privacy policy, ToS)
-- ❌ Web Store submission
+**Available logs:**
+```
+[SmartFillAI] platform:detected ats=greenhouse via=query_param confidence=0.95
+[SmartFillAI] fingerprint:hit ats=greenhouse fields=12/15 source=template
+[SmartFillAI] fingerprint:promoted source=template→learned key=greenhouse::abc
+[SmartFillAI] fill via char-by-char retry succeeded ("first_name")
+[SmartFillAI] select fill via embedding { value, picked, similarity }
+[SmartFillAI] dropdown fill failed { value, optionsSample, optionCount }
+[SmartFillAI] learn: LinkedIn URL = linkedin.com/in/...
+[SmartFillAI] update: current_location → Bangalore (South), Karnataka, India
+```
 
 ---
 
-## 17. Environment Variables
-
-| Variable | Purpose | Required | Default | Location |
-|----------|---------|----------|---------|----------|
-| `VITE_GROQ_API_KEY` | GROQ API authentication | No | — | `.env.local` |
-| `VITE_GEMINI_API_KEY` | Google Gemini API key | No | — | `.env.local` (backend-only, never in extension) |
-| `VITE_SUPABASE_URL` | Supabase project URL | No | — | `.env.local` |
-| `VITE_SUPABASE_ANON_KEY` | Supabase anon key | No | — | `.env.local` |
-| `ENV_GROQ_API_KEY` | Pre-fill GROQ on install | No | — | build-time only |
-| `DEBUG` | Enable verbose logging | No | false | localStorage |
-
----
-
-## 18. Testing & Quality
-
-### Test Coverage
-
-| Type | Status | Notes |
-|------|--------|-------|
-| **Unit tests** | ✅ Partial | AI providers, embedder, cost tracker tested |
-| **Integration tests** | 🟡 Minimal | Some field matching tests exist |
-| **E2E tests** | ❌ None | Manual testing only (very time-consuming) |
-| **Visual regression** | ❌ None | No screenshot testing |
-
-### Manual Testing Portals
-- ✅ Greenhouse
-- ✅ Workday
-- ✅ Lever
-- ✅ eBay
-- ✅ Happiest Minds
-- ✅ LinkedIn
-- ✅ Avathon
-
-### Quality Gaps
-- No automated E2E (would require headless Chrome + form generators)
-- No accessibility testing
-- No performance benchmarks
-- No security scanning (no SAST/DAST pipeline)
-
----
-
-## 19. Product Roadmap (Inferred from Code & TODOs)
-
-### Next 30 Days (Completed ✅)
-- ✅ Phase G: Extensible field-handler registry
-- ✅ Phase H: Radio group support
-- ✅ Phases I-K: Company-aware synthesis
-- ✅ Phase M: Checkbox groups
-- ✅ Bug fixes: Expected CTC, Angular Material pollution
-
-### Next 90 Days (Planned 🟡)
-- [ ] Fix Angular Material mat-select detection
-- [ ] Complete multi-device sync (conflict resolution + UI)
-- [ ] Strip diagnostic logs
-- [ ] Add basic error handling
-- [ ] Document custom field handler pattern for users
-- [ ] Resume PDF extraction via Gemini
-- [ ] Bulk Q→A management (delete, export)
-
-### Next 6 Months (Estimated 📋)
-- [ ] Move AI calls to backend proxy (security)
-- [ ] Add HTTPS-only mode
-- [ ] Encrypt sensitive profile fields
-- [ ] User consent flow for cloud features
-- [ ] Analytics dashboard (usage, success rate)
-- [ ] Browser extension store submission (Chrome Web Store)
-- [ ] Firefox support (if demand)
-
-### 12+ Months (Vision 🌟)
-- [ ] LinkedIn auto-profile sync (import profile from LinkedIn)
-- [ ] Mobile app version (if demand)
-- [ ] AI-powered resume optimization ("Here's how to improve your resume")
-- [ ] Interview prep coaching ("Practice answering this question")
-- [ ] Community-curated answers ("See how others answered this question")
-- [ ] Monetization: Pro tier ($9.99/month for unlimited AI essays)
-
----
-
-## 20. Product Health Scorecard
-
-| Category | Score | Rationale |
-|----------|-------|-----------|
-| **Architecture** | 8/10 | Registry pattern is solid; needs backend separation for security |
-| **Security** | 4/10 | API keys exposed; no encryption; suitable for MVP, not production |
-| **Scalability** | 7/10 | Single-device architecture; no concurrency issues; cloud backend ready but incomplete |
-| **Maintainability** | 7/10 | Well-organized, modular code; diagnostic logs messy; few code comments |
-| **UX** | 6/10 | Works but cluttered popup; no progress indicators; error messages sparse |
-| **Documentation** | 5/10 | README good; inline docs minimal; no user guides for custom fields |
-| **Testing** | 3/10 | Unit tests OK; no integration/E2E; manual testing only |
-| **Performance** | 8/10 | Fast detection & matching; AI latency is expected; memory usage reasonable |
-
-**Overall Product Health: 6.3/10**  
-**Verdict:** Strong MVP, not production-ready. Ready for beta testing with job seekers; needs security hardening before public release.
-
----
-
-## 21. Glossary
-
-| Term | Definition |
-|------|-----------|
-| **Canonical Key** | Standard profile field name (e.g., `first_name`, `phone_number`, `current_company`) |
-| **Field Signature** | Detected field metadata: label, name, id, type, options, etc. |
-| **Waterfall** | Sequential matching strategy: each step returns early if match found |
-| **Embedding** | Vector representation of text (via MiniLM model) used for similarity matching |
-| **Q→A Cache** | Question → [Answers] mapping for non-profile questions |
-| **Field Handler** | Pluggable strategy for detecting + filling a specific field type (registry pattern) |
-| **Ghost Text** | Preview showing what value will be filled before actually filling |
-| **Domain Cache** | IndexedDB cache of field matches per domain (reused on return visits) |
-| **Service Worker** | Chrome background script that runs even when extension popup is closed |
-| **Content Script** | JavaScript injected into every webpage (accesses DOM, triggers fills) |
-
----
-
-## 22. Frequently Asked Questions (FAQ)
-
-### For Users
-
-**Q: Is my data safe?**  
-A: Yes. All form data stays on your device unless you click "Generate AI Answer." Your profile is encrypted in browser storage. We don't sell data or track your browsing.
-
-**Q: Does this work on all job sites?**  
-A: Works on Greenhouse, Workday, Lever, eBay, LinkedIn, Happiest Minds, and most other job portals. Some custom fields (Angular Material dropdowns, date pickers) may need manual fill on first visit.
-
-**Q: How much does it cost?**  
-A: Free forever. Currently in beta. Once stable, we may offer Pro tier ($9.99/month) for unlimited AI essays. Free tier stays unlimited.
-
-**Q: Can I sync my profile across devices?**  
-A: Not yet. Cloud sync is built but incomplete. Coming in next 90 days.
-
-**Q: What if a field doesn't fill correctly?**  
-A: Fill it manually once. The extension learns from that. Next time, it will prefill correctly. If it keeps failing, contact support with the portal name.
-
-### For Developers
-
-**Q: How do I add support for a new field type?**  
-A: Create a handler in `field-handlers/TYPENAME-handler.ts` implementing `FieldHandler` interface. Register it in `field-handlers/registry.ts`. See `radio-group-handler.ts` for example.
-
-**Q: How do I debug form detection?**  
-A: Open extension popup, go to Settings, enable "Debug mode" (not yet implemented). Reload page. Popup shows detected fields. Or open DevTools console and search for `[SFA-DIAG]` logs.
-
-**Q: Where are API keys stored?**  
-A: In `chrome.storage.local` under settings key. Never logged. To rotate: Settings screen → Clear API key → Re-enter.
-
-**Q: Can I run this on my own Supabase instance?**  
-A: Yes. Edit `.env.local` with your Supabase URL and anon key. Cloud sync will use your instance.
-
-### For Product Managers
-
-**Q: What's our main monetization path?**  
-A: Pro tier ($9.99/month) for unlimited AI essays + priority support + analytics dashboard. Expected LTV ~$120 (first year).
-
-**Q: What's our TAM (Total Addressable Market)?**  
-A: ~5M active job seekers in US + EU. If we capture 1%, that's 50k users × $120 LTV = $6M annual.
-
-**Q: What's our churn risk?**  
-A: High if we break filling on popular portals (Greenhouse, Workday). Low once multi-device sync ships (data lock-in).
-
-**Q: How do we compete with browser autofill?**  
-A: Browser autofill (Chrome, Firefox) is domain-specific. We work across ALL sites. We learn and synthesize (AI). We give users control over what they reveal (form data never touches cloud unless they ask).
-
----
-
-## 23. What This Product Thinks It Is vs. What It Actually Is
-
-### What It Thinks It Is
-> "Your profile on every form. Intelligent, learningautofill that thinks when it matters."
-
-### What It Actually Is
-A JavaScript extension that regex-matches form labels to a hard-coded list of profile fields, sometimes guesses with embeddings when regex fails, and calls Gemini when it has no idea. Stores results in chrome.storage.local. Works great on job portals with clean HTML. Breaks embarrassingly on Angular apps.
-
-### Key Realities
-| Expectation | Reality |
-|-----------|---------|
-| "Works on any form" | Works on forms with semantic HTML; custom React/Angular components require first manual fill |
-| "Learns from you" | Learns from you if field labels match our regex; otherwise asks you again next time |
-| "AI is smart" | AI is good at writing essays; terrible at guessing field intent without hints |
-| "Privacy-first" | Your data stays local until you ask for AI, then it goes to Google (or GROQ); not encrypted in transit |
-| "Seamless fill" | 85% seamless, 15% "hmm, let me think about this field" |
-
----
-
-## 24. Final Recommendations
-
-### Immediate Actions (This Week)
-1. ✅ Strip `[SFA-DIAG]` logs before any user beta
-2. ✅ Fix remaining Angular Material fields (mat-select portal detection)
-3. ✅ Document custom field handler pattern
-4. ✅ Add basic error handling (UI for "Fill failed" state)
-
-### High-Impact Improvements (Next 30 Days)
-1. Move API calls to backend proxy (security + cost control)
-2. Complete multi-device sync (+ conflict resolution)
-3. Add performance monitoring (dashboards for user success rate)
-4. Implement HTTPS-only mode (warn if form is http://)
-
-### Strategic Improvements (Next 90 Days)
-1. Encrypt sensitive profile fields (salary, SSN) at rest
-2. User consent flow for cloud features (clear, upfront)
-3. Browser compatibility (Firefox support if demand warrants)
-4. Resume PDF extraction via Gemini (auto-populate work history)
-
-### Long-Term Vision
-**Build the "home base" for job seekers:** Beyond just form autofill, become the platform where job seekers manage their job hunt:
-- Centralized resume + cover letter library
-- Interview preparation (practice Q&A, coaching)
-- Job application tracking (what you applied to, where you are in process)
-- Analytics (success rate per company, per industry)
-- Community features (anonymously see how peers answer hard questions)
-
----
-
-## 25. Document Metadata
-
-| Property | Value |
-|----------|-------|
-| **Document Version** | 1.0 |
-| **Last Updated** | 2026-06-21 |
-| **Author** | Claude Code Analysis |
-| **Codebase Commit** | 597e764 (main branch merged) |
-| **Coverage** | 100% of committed code as of merge date |
-| **Assumptions** | See section 26 below |
-| **Confidence** | High (based on code inspection, not documentation) |
-
----
-
-## 26. Assumptions & Unknowns
-
-### Assumptions Made
-- **AI Cost Model:** Assumed Gemini $0.075/1M tokens, GROQ $0.0001/token based on public pricing; actual may vary
-- **User Base:** Inferred job seekers as primary user from portal list (Greenhouse, Workday, LinkedIn); unconfirmed
-- **Revenue:** Assumed Pro tier at $9.99/month; no confirmed pricing strategy
-- **Security Model:** Assumed device-local is acceptable for MVP; production requires encryption + backend proxy
-
-### Unknowns
-- **Actual User Count:** No metrics visible in code (no GA, no Supabase auth enforcement)
-- **Churn Rate:** No data on how many users uninstall
-- **Most-Used Portals:** No analytics on which portals generate most fills
-- **Error Frequency:** No error tracking; can't quantify fill failure rate
-- **AI Cost Burn:** No dashboard showing actual monthly spend (cost-tracker.ts only estimates)
-- **Sync Architecture:** Supabase setup incomplete; actual conflict resolution strategy unknown
-
----
-
-## 27. Conclusion
-
-SmartFillAI is a **well-architected, feature-rich MVP** for job application automation. The field-handler registry pattern (Phase G) is a clean abstraction that makes adding new input types trivial. The 6-step waterfall matching strategy is solid and performant.
-
-**Ready for:** Beta testing with 100-1000 job seekers, feedback on portal coverage, A/B testing on essay quality.
-
-**Not ready for:** Public Chrome Web Store release (needs security hardening, diagnostics removal, analytics).
-
-**Next critical milestone:** Move API calls to backend proxy and complete multi-device sync. After that, the product can be released to a wider audience without security risk.
-
----
-
-*End of Product Documentation*
+**Maintained by:** SmartFillAI  
+**Next review:** Post Chrome Web Store submission
