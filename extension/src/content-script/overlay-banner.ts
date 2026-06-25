@@ -126,6 +126,47 @@ export function showSuccessBanner(filledCount: number): void {
   autoDismissTimer = setTimeout(hideBanner, 2500);
 }
 
+/** Phase AI.3 — breakdown of fill outcomes for the audit success banner. */
+export interface AuditResult {
+  ats:        number;  // fields pre-filled by the ATS's native resume parser
+  sfa_ok:     number;  // fields we filled successfully
+  sfa_failed: number;  // fields we tried but couldn't fill
+  skipped:    number;  // SKIP / FILE_UPLOAD (not applicable for regular fill)
+  empty:      number;  // no profile data available for this field
+}
+
+/**
+ * Show a breakdown success banner:
+ *   "✓ 8 by ATS · 7 by SmartFillAI · 5 empty"
+ *
+ * Replaces showSuccessBanner for the post-fill-pass display.
+ * Auto-dismisses after 3s.
+ */
+export function showAuditBanner(r: AuditResult): void {
+  const banner = ensureBanner('success');
+
+  const parts: string[] = [];
+  if (r.ats        > 0) parts.push(`${r.ats} by ATS`);
+  if (r.sfa_ok     > 0) parts.push(`${r.sfa_ok} by SmartFillAI`);
+  if (r.sfa_failed > 0) parts.push(`${r.sfa_failed} incomplete`);
+  if (r.empty      > 0) parts.push(`${r.empty} empty`);
+  const summary = parts.length > 0 ? parts.join(' · ') : 'Nothing to fill';
+
+  banner.innerHTML = `
+    <div class="sfa-banner-header">
+      <span class="sfa-banner-brand">SmartFillAI</span>
+      <span class="sfa-banner-spacer"></span>
+      <button class="sfa-banner-close" data-action="close" title="Dismiss">×</button>
+    </div>
+    <div class="sfa-banner-title">✓ ${escapeHtml(summary)}</div>
+  `;
+
+  banner.querySelector<HTMLButtonElement>('[data-action="close"]')
+    ?.addEventListener('click', hideBanner);
+
+  autoDismissTimer = setTimeout(hideBanner, 3000);
+}
+
 export function hideBanner(): void {
   clearTimeout(autoDismissTimer);
   const sh = getOverlayShadow();

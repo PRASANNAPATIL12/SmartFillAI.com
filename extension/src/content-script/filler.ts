@@ -50,30 +50,76 @@ function resetReactValueTracker(el: HTMLElement): void {
   }
 }
 
+export interface FillOptions {
+  canonicalKey?: string;
+  /** Skip this field if it already has a non-empty value not set by SmartFillAI.
+   *  Returns 'ats_skipped' so callers can tag and badge these fields. */
+  skipIfFilled?: boolean;
+}
+
+/** Richer result type — callers use this to categorize fills in the audit. */
+export type FillResult = 'ok' | 'failed' | 'ats_skipped';
+
+/**
+ * Read the current user-visible value of any field element.
+ * Used by the skipIfFilled gate and the ATS pre-fill snapshot.
+ */
+export function readElementValue(el: HTMLElement): string {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    return el.value ?? '';
+  }
+  if (el instanceof HTMLSelectElement) {
+    return el.value ?? '';
+  }
+  if (el.isContentEditable) {
+    return el.innerText ?? '';
+  }
+  return (el as HTMLInputElement).value ?? '';
+}
+
 /**
  * Fill a form element with a value.
- * Returns true if the value stuck (verified by reading back).
  *
  * Async because ARIA comboboxes need to wait for the popup listbox to
  * render before we can click an option. Plain inputs and native <select>
  * resolve synchronously but the signature is async for uniformity.
+ *
+ * Returns 'ats_skipped' when skipIfFilled is true and the field already has
+ * a value that was NOT set by SmartFillAI — preserving ATS-parsed data.
  */
 export async function fillElement(
   el: HTMLElement,
   value: string,
-  canonicalKey?: string
-): Promise<boolean> {
-  if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) return false;
+  options?: FillOptions | string
+): Promise<FillResult> {
+  if ((el as HTMLInputElement).disabled || (el as HTMLInputElement).readOnly) return 'failed';
+
+  const opts: FillOptions = typeof options === 'string'
+    ? { canonicalKey: options }
+    : (options ?? {});
+
+  // Phase AI.1 — ATS respect gate. If the field already has a non-empty value
+  // that we did not set (dittoFilled is not present), tag it as ATS-filled and
+  // return early. This preserves the ATS's own parse result (name, email, etc.)
+  // and avoids the race condition where we overwrite correct data.
+  if (opts.skipIfFilled && !el.dataset.dittoFilled) {
+    const current = readElementValue(el).trim();
+    if (current !== '') {
+      el.dataset.atsFilledNative = 'true';
+      return 'ats_skipped';
+    }
+  }
 
   try {
     // Dispatch by field kind through the handler registry. The registry order
     // replicates the previous if/else precedence exactly (button-dropdown →
     // select → combobox → plain text); each handler delegates to the same
     // underlying fill function it always used.
-    return await resolveHandler(el).fill(el, value, { canonicalKey });
+    const ok = await resolveHandler(el).fill(el, value, { canonicalKey: opts.canonicalKey });
+    return ok ? 'ok' : 'failed';
   } catch (err) {
     console.warn('[SmartFillAI] fill threw:', err);
-    return false;
+    return 'failed';
   }
 }
 

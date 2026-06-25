@@ -297,27 +297,27 @@ describe('fillElement integration', () => {
   it('fills a text input via registry dispatch', async () => {
     const el = makeInput('text');
     const result = await fillElement(el, 'Jane Smith');
-    expect(result).toBe(true);
+    expect(result).toBe('ok');
     expect(el.value).toBe('Jane Smith');
   });
 
   it('fills a select via registry dispatch', async () => {
     const el = makeSelect(['Male', 'Female', 'Non-binary']);
     const result = await fillElement(el, 'Female', 'gender');
-    expect(result).toBe(true);
+    expect(result).toBe('ok');
     expect(el.options[el.selectedIndex].text).toBe('Female');
   });
 
   it('fills a textarea via registry dispatch', async () => {
     const el = makeTextarea();
     const result = await fillElement(el, 'Cover letter content');
-    expect(result).toBe(true);
+    expect(result).toBe('ok');
     expect(el.value).toBe('Cover letter content');
   });
 
   it('fills a contenteditable div via handler directly', async () => {
     const el = makeContenteditable();
-    // Call the handler directly — fillElement wraps in try/catch and returns false
+    // Call the handler directly — fillElement wraps in try/catch and returns 'failed'
     // when window.getSelection() throws in jsdom (no layout engine). The handler
     // itself is exercised in the Handler capture() tests above.
     const handler = resolveHandler(el);
@@ -326,12 +326,50 @@ describe('fillElement integration', () => {
     expect(result).toBe(true);
   });
 
-  it('returns true even for empty string fill', async () => {
+  it('returns ok even for empty string fill', async () => {
     const el = makeInput('text');
     el.value = 'something';
     const result = await fillElement(el, '');
-    expect(result).toBe(true);
+    expect(result).toBe('ok');
     expect(el.value).toBe('');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// fillElement — skipIfFilled (Phase AI.1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('fillElement skipIfFilled', () => {
+  it('returns ats_skipped and preserves value when field is pre-filled by ATS', async () => {
+    const el = makeInput('text');
+    el.value = 'Alice';                        // pre-filled by ATS
+
+    const result = await fillElement(el, 'Bob', { skipIfFilled: true });
+
+    expect(result).toBe('ats_skipped');
+    expect(el.value).toBe('Alice');            // unchanged
+    expect(el.dataset.atsFilledNative).toBe('true');
+  });
+
+  it('fills over our own prior fill (dittoFilled=true) even with skipIfFilled', async () => {
+    const el = makeInput('text');
+    el.value = 'OldValue';
+    el.dataset.dittoFilled = 'true';           // we set this in a previous pass
+
+    const result = await fillElement(el, 'NewValue', { skipIfFilled: true });
+
+    expect(result).toBe('ok');
+    expect(el.value).toBe('NewValue');
+  });
+
+  it('fills an empty field normally when skipIfFilled is true', async () => {
+    const el = makeInput('text');
+    // el.value is '' by default
+
+    const result = await fillElement(el, 'Bob', { skipIfFilled: true });
+
+    expect(result).toBe('ok');
+    expect(el.value).toBe('Bob');
   });
 });
 

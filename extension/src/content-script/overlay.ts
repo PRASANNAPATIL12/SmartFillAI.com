@@ -805,6 +805,7 @@ function ensureBadgeStyles(sh: ShadowRoot): void {
     .sfa-badge.fill   { background: #10b981; } /* emerald-500 */
     .sfa-badge.review { background: #f59e0b; } /* amber-500 */
     .sfa-badge.flag   { background: #94a3b8; } /* slate-400 */
+    .sfa-badge.ats    { background: #06b6d4; } /* cyan-500 — ATS pre-filled */
   `;
   sh.appendChild(style);
   _badgeStyleEl = style;

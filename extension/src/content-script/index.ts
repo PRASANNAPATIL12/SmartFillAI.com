@@ -25,7 +25,8 @@ import {
   type FormFingerprint,
   type FingerprintFieldEntry,
 } from './form-fingerprinter';
-import { fillElement, fillFileInput } from './filler';
+import { fillElement, fillFileInput, readElementValue } from './filler';
+import { createAtsParserWatcher } from './ats-parser-watcher';
 import { resolveHandler } from './field-handlers/registry';
 import { classifyAnswerKind, getSeedAnswer } from './memory-asset';
 import { detectCompany, invalidateAtsCache } from './company-detector';
@@ -38,7 +39,9 @@ import {
   showEmptyBanner,
   showFillingBanner,
   showSuccessBanner,
+  showAuditBanner,
   hideBanner,
+  type AuditResult,
 } from './overlay-banner';
 import { showGhost, removeGhost, repositionAllGhosts, sweepDisconnectedGhosts } from './ghost-text';
 import { isCombobox, isComboboxFilled, getComboboxDisplayValue, findListbox, peekOptions, ensureAllDropdownsClosed } from './combobox';
@@ -57,6 +60,10 @@ interface FieldState {
 }
 
 const matchMap = new Map<HTMLElement, FieldState>();
+// Phase AI.1 — snapshot of field values taken before each fill pass.
+// Elements with a non-empty pre-existing value that we did not set are
+// tagged atsFilledNative='true' by fillElement(skipIfFilled:true).
+const atsPreFillValues = new Map<HTMLElement, string>();
 let profile: ProfileEntry[] = [];
 let profileLoaded = false;
 let scanTimer:    ReturnType<typeof setTimeout> | undefined;
@@ -690,19 +697,39 @@ function dismissBanner(): void {
 function triggerBannerFill(): void {
   showFillingBanner();
   pendingFilled = 0;
-  // STEP 1.3 — cooldown must outlast the full fill phase. A page with
-  // multiple comboboxes (Country, Degree, State) needs ~2.5s for fills to
-  // settle plus 2.8s of success-banner display = ~5.3s minimum.
-  bannerCooldownUntil = Date.now() + 6500;
+  // Extend cooldown to cover ATS burst-wait (up to 8s) + combobox settle (3.5s)
+  // + banner display (2.8s) = ~16s max.
+  bannerCooldownUntil = Date.now() + 16000;
 
   // Phase 3: snapshot elements known BEFORE the fill so scanFields() can
   // auto-fill any NEW matched fields that appear after (conditional fields).
   hasFilled = true;
   preFillSnapshot = new Set(matchMap.keys());
 
+  // Phase AI.1 — capture pre-existing values so ATS-filled fields can be
+  // identified when fillElement(skipIfFilled:true) runs.
+  atsPreFillValues.clear();
+  for (const [el] of matchMap) {
+    const v = readElementValue(el).trim();
+    if (v !== '') atsPreFillValues.set(el, v);
+  }
+
+  // Phase AI.2 — arm the ATS parser watcher BEFORE the fill (which includes
+  // the file-fill loop that triggers ATS parsing after resume upload).
+  const atsWatcher = createAtsParserWatcher(document);
+  atsWatcher.arm();
+
   // Top frame fills its own first, then broadcasts to iframes
   requestAnimationFrame(() => {
-    fillAll().then((local) => {
+    (async () => {
+      // Wait for the ATS native parser to settle before filling what's left.
+      // Fast path (no burst): resolves after 5s BURST_WINDOW_MS.
+      // Burst path: waits 1.5s of silence, hard ceiling 8s.
+      await atsWatcher.waitForSettle();
+      atsWatcher.disarm();
+      sfaLog('ats-watcher settled, burst=', atsWatcher.burstDetected);
+
+      const local = await fillAll();
       pendingFilled += local.filled;
       broadcastToAllIframes({ type: 'sfa:fill-request' });
       // STEP 1.1 — recompute the top frame's own counts immediately
@@ -712,18 +739,16 @@ function triggerBannerFill(): void {
 
       clearTimeout(pendingFillTimer);
       // STEP 1.3 — wait long enough for iframe combobox fills to finish.
-      // Each combobox takes up to ~560ms; 5 fields is ~2.8s; 3.5s is safe.
       pendingFillTimer = setTimeout(() => {
-        showSuccessBanner(pendingFilled);
+        // Phase AI.3 — show breakdown banner: ATS · SmartFillAI · empty
+        showAuditBanner(auditFills());
         bannerCooldownUntil = Date.now() + 2800;
         lastBannerSig = '';
         bannerVisible = false;
-        // STEP 1.4 — after the success banner finishes its auto-dismiss,
-        // force a final aggregation pass so the now-correct unfilled=0
-        // reading takes effect and the banner stays gone.
+        // STEP 1.4 — after success banner auto-dismiss, final aggregation.
         setTimeout(() => { renderAggregatedBanner(); }, 2900);
       }, 3500);
-    }).catch(() => {
+    })().catch(() => {
       showSuccessBanner(0);
       bannerCooldownUntil = Date.now() + 2800;
       lastBannerSig = '';
@@ -959,18 +984,21 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       continue;
     }
 
-    const ok = await fillElement(
+    const fillResult = await fillElement(
       el,
       resolvePhoneValue(state.entry.value, state.entry.canonical_key),
-      state.entry.canonical_key
+      { canonicalKey: state.entry.canonical_key, skipIfFilled: true }
     );
 
-    if (ok) {
+    if (fillResult === 'ats_skipped') {
+      // Phase AI.1 — ATS parser pre-filled this field; preserve it and show
+      // a teal badge so the user knows we intentionally left it alone.
+      paintFieldBadge(el, 'ats', 'Pre-filled by ATS');
+      sfaLog('ats-skip:', state.sig.label || state.sig.name || '?');
+    } else if (fillResult === 'ok') {
       filled++;
       removeGhost(el);
-      // Phase AD.2 — paint the status badge as soon as fill succeeds (don't
-      // wait for the next scan). Picks 'fill' or 'review' based on the
-      // confidence band that produced the match.
+      // Phase AD.2 — paint the status badge as soon as fill succeeds.
       const badgeAction = state.result.fillAction === 'review' ? 'review' : 'fill';
       paintFieldBadge(el, badgeAction, describeMatchForBadge(state.result, state.entry));
       // Fire-and-forget — use count update is best-effort
@@ -1034,8 +1062,12 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
       continue;
     }
 
-    const ok = await fillElement(el, remembered);
-    if (ok) filled++;
+    const fillResult = await fillElement(el, remembered, { skipIfFilled: true });
+    if (fillResult === 'ok') {
+      filled++;
+    } else if (fillResult === 'ats_skipped') {
+      paintFieldBadge(el, 'ats', 'Pre-filled by ATS');
+    }
   }
 
   // ── Final tier: LLM (Gemini) answers questions with no prior answer ──────────
@@ -1116,8 +1148,9 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
     }
 
     sfaLog('LLM tier: answered', label, '→', resp.answer, '(confidence:', resp.confidence, ')');
-    const ok = await fillElement(el, resp.answer);
-    sfaLog('LLM tier: fill', ok ? 'OK' : 'FAILED', label);
+    const fillResult = await fillElement(el, resp.answer, { skipIfFilled: true });
+    const ok = fillResult === 'ok';
+    sfaLog('LLM tier: fill', ok ? 'OK' : fillResult === 'ats_skipped' ? 'ATS_SKIP' : 'FAILED', label);
     if (ok) {
       filled++;
       // Cache factual answers so the next visit is a free qa-cache hit. Do NOT
@@ -1127,6 +1160,8 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
         rememberAnswer(label, resp.answer, 'llm').catch(() => {});
         sendToBackground('STORE_QA_EMBEDDING', { question: label }).catch(() => {});
       }
+    } else if (fillResult === 'ats_skipped') {
+      paintFieldBadge(el, 'ats', 'Pre-filled by ATS');
     }
   }
   sfaLog('LLM tier: done, calls made:', llmCalls);
@@ -1178,6 +1213,48 @@ async function fillAll(): Promise<{ filled: number; skipped: number }> {
   return { filled, skipped };
 }
 
+// ── Phase AI.3 — Fill audit ──────────────────────────────────────────────────
+
+/**
+ * Categorize every field in matchMap after the fill pass completes.
+ * Called from triggerBannerFill's settle callback to produce the breakdown
+ * summary shown in the success banner.
+ */
+function auditFills(): AuditResult {
+  let ats = 0, sfa_ok = 0, sfa_failed = 0, skipped = 0, empty = 0;
+
+  for (const [el, state] of matchMap) {
+    if (state.result.status === 'SKIP' || state.result.status === 'FILE_UPLOAD') {
+      skipped++;
+      continue;
+    }
+    if (!el.isConnected) continue;
+
+    if (el.dataset.atsFilledNative === 'true') {
+      ats++;
+      // Re-paint teal in case DOM was replaced by a React re-render
+      paintFieldBadge(el, 'ats', 'Pre-filled by ATS');
+      continue;
+    }
+
+    if (el.dataset.dittoFilled === 'true') {
+      if (el.dataset.dittoStatus === 'FILL_FAILED') {
+        sfa_failed++;
+        paintFieldBadge(el, 'review', 'SmartFillAI: fill may be incomplete');
+      } else {
+        sfa_ok++;
+      }
+      continue;
+    }
+
+    // Not filled by anyone — no profile data or UNKNOWN field
+    empty++;
+  }
+
+  sfaLog('audit:', { ats, sfa_ok, sfa_failed, skipped, empty });
+  return { ats, sfa_ok, sfa_failed, skipped, empty };
+}
+
 /** True if the input's `accept` attribute permits the given file. */
 function acceptAllowsFile(accept: string, mimeType: string, fileName: string): boolean {
   if (!accept) return true;
@@ -1196,12 +1273,12 @@ function acceptAllowsFile(accept: string, mimeType: string, fileName: string): b
 
 async function handlePillFill(target: { el: HTMLElement; entry?: ProfileEntry }): Promise<void> {
   if (!target.entry) return; // ESSAY pills have no entry
-  const ok = await fillElement(
+  const fillResult = await fillElement(
     target.el,
     resolvePhoneValue(target.entry.value, target.entry.canonical_key),
     target.entry.canonical_key
   );
-  if (ok) {
+  if (fillResult === 'ok') {
     removeGhost(target.el);
     sendToBackground('RECORD_USE', { id: target.entry.id }).catch(() => {});
   }
@@ -2117,7 +2194,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       el,
       resolvePhoneValue(state.entry.value, state.entry.canonical_key),
       state.entry.canonical_key,
-    ).then((ok) => {
+    ).then((fillResult) => {
+      const ok = fillResult === 'ok';
       if (ok) sendToBackground('RECORD_USE', { id: state.entry!.id }).catch(() => {});
       sendResponse({ success: ok });
     }).catch(() => sendResponse({ success: false }));

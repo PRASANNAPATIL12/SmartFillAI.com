@@ -127,7 +127,7 @@ export type MatchStatus = 'MATCHED' | 'ESSAY' | 'FILE_UPLOAD' | 'UNKNOWN' | 'SKI
  * SKIP / ESSAY / FILE_UPLOAD results don't get a fillAction (they aren't
  * candidates for the regular fill path).
  */
-export type FillAction = 'fill' | 'review' | 'flag';
+export type FillAction = 'fill' | 'review' | 'flag' | 'ats';
 
 export interface MatchResult {
   /** Match status */
