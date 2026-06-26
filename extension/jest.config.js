@@ -11,6 +11,8 @@ export default {
     // Swap env.ts → env.mock.ts so Jest never hits import.meta
     // Matches both './env' (relative) and '@/ai-providers/env' (alias)
     '(^\\./env$|ai-providers[/\\\\]env$)': '<rootDir>/src/ai-providers/env.mock.ts',
+    // Same trick for the Supabase env (Phase AL — background uses import.meta too)
+    '(^\\./supabase-env$|background[/\\\\]supabase-env$)': '<rootDir>/src/background/supabase-env.mock.ts',
   },
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   transform: {

@@ -1,10 +1,11 @@
 /**
- * IndexedDB wrapper — five object stores:
+ * IndexedDB wrapper — six object stores:
  *   field_cache       : domain-fingerprint → FieldCacheEntry  (per-field match cache)
  *   embeddings        : profileEntryId     → Float32Array     (MiniLM vectors)
  *   documents         : id                 → StoredDocument    (file bytes + metadata)
  *   qa_embeddings     : normalized question → vector           (fuzzy Q→A matching)
  *   form_fingerprints : `${atsId}::${structuralHash}` → FormFingerprint  (whole-form cache, Phase AD.1)
+ *   global_fp_cache   : `${atsId}::${structuralHash}` → GlobalFingerprintCacheEntry  (Phase AL — crowdsourced consensus, 7-day TTL)
  *
  * Uses the raw IDBDatabase API (no extra library) because the extension
  * ships no runtime deps beyond the AI SDKs.
@@ -16,12 +17,13 @@ import type { FormFingerprint } from '../content-script/form-fingerprinter';
 export type { FieldCacheEntry };
 
 const DB_NAME = 'ditto_v1';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE_FIELD_CACHE       = 'field_cache';
 const STORE_EMBEDDINGS        = 'embeddings';
 const STORE_DOCUMENTS         = 'documents';
 const STORE_QA_EMBEDDINGS     = 'qa_embeddings';
 const STORE_FORM_FINGERPRINTS = 'form_fingerprints';
+const STORE_GLOBAL_FP_CACHE   = 'global_fp_cache';
 
 let _db: IDBDatabase | null = null;
 
@@ -56,6 +58,14 @@ function openDB(): Promise<IDBDatabase> {
         fp.createIndex('atsId',      'atsId',      { unique: false });
         fp.createIndex('lastUsedAt', 'lastUsedAt', { unique: false });
         fp.createIndex('useCount',   'useCount',   { unique: false });
+      }
+
+      if (oldVersion < 5) {
+        // Phase AL — crowdsourced consensus cache.
+        // Keyed by the same `${atsId}::${structuralHash}` we use elsewhere.
+        // Records the global vote winners + when we fetched them.
+        const gfp = db.createObjectStore(STORE_GLOBAL_FP_CACHE, { keyPath: 'key' });
+        gfp.createIndex('fetchedAt', 'fetchedAt', { unique: false });
       }
     };
 
@@ -299,6 +309,47 @@ export async function evictStaleFormFingerprints(
   for (const fp of all) {
     if (fp.lastUsedAt < cutoff) {
       await idbDelete(STORE_FORM_FINGERPRINTS, fp.key);
+    }
+  }
+}
+
+// ── Global Fingerprint Cache (Phase AL — crowdsourced consensus, 7-day TTL) ─
+
+/**
+ * One cached row per fingerprint key. `votes` maps each field's djb2 hash
+ * to the top-voted canonical_key seen in the global tier (after the quorum
+ * gate; null entries are skipped client-side).
+ */
+export interface GlobalFingerprintCacheEntry {
+  key:        string;                          // `${atsId}::${structuralHash}`
+  atsId:      string;
+  votes:      Record<string, { canonical: string; voteCount: number }>;
+  fetchedAt:  number;                          // ms since epoch
+}
+
+const GLOBAL_FP_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+export async function getGlobalFpCacheEntry(key: string): Promise<GlobalFingerprintCacheEntry | undefined> {
+  const row = await idbGet<GlobalFingerprintCacheEntry>(STORE_GLOBAL_FP_CACHE, key);
+  if (!row) return undefined;
+  // TTL — treat stale rows as a miss; caller will re-fetch from Supabase
+  if (Date.now() - row.fetchedAt > GLOBAL_FP_TTL_MS) return undefined;
+  return row;
+}
+
+export async function putGlobalFpCacheEntry(entry: GlobalFingerprintCacheEntry): Promise<void> {
+  return idbPut(STORE_GLOBAL_FP_CACHE, entry);
+}
+
+/** Manual eviction (the TTL check in get() already handles read-time staleness). */
+export async function evictStaleGlobalFpCache(
+  maxAgeMs: number = GLOBAL_FP_TTL_MS,
+): Promise<void> {
+  const cutoff = Date.now() - maxAgeMs;
+  const all = await idbGetAll<GlobalFingerprintCacheEntry>(STORE_GLOBAL_FP_CACHE);
+  for (const row of all) {
+    if (row.fetchedAt < cutoff) {
+      await idbDelete(STORE_GLOBAL_FP_CACHE, row.key);
     }
   }
 }

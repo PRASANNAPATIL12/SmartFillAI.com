@@ -58,3 +58,20 @@ Columns:
 **No new E2E specs** for AK — the blocklist is a unit-testable pure function. Live verification just confirms the regex + override path is reachable in `runScan()`.
 
 ---
+
+## 2026-06-27 — Phase AL (global tier — read path)
+
+| Suite | Pass | Fail | Total | Notes |
+|---|---|---|---|---|
+| `global-fingerprint-client.test.ts` (AL.5) | 11 | 0 | 11 | quorum gate, template-key bypass, edge cases, isTemplateCanonicalKey |
+
+**Cumulative unit tests:** 348 / 348 passing.
+
+**Live E2E NOT YET added** — the global tier requires a Supabase round-trip and currently-empty global_fingerprints/global_field_votes tables on the project. After Phase AM seeds real contributions, a follow-up E2E spec will:
+  1. Mock-seed global_field_votes for a fingerprint key
+  2. Open a NEW form (no per-user fingerprint, no per-user IDB cache)
+  3. Verify Step 1.7 matches the fields via global consensus
+
+For now, the wiring is verified via unit tests + a clean build + zero regressions across the 337 prior tests.
+
+---

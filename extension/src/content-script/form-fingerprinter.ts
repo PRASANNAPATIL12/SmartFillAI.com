@@ -101,6 +101,18 @@ export function nameHash(name: string): string {
   return djb2(normalized);
 }
 
+/**
+ * Phase AL — public helper. Returns the same one-way hash the fingerprint
+ * subsystem uses to identify a field. Used by the global tier (Step 1.7)
+ * so its `field_hash` lookups match the local fingerprint cache exactly.
+ *
+ * Returns '' when the signature has no usable name source (matcher should
+ * skip the global tier in that case).
+ */
+export function fieldHashFor(sig: FieldSignature): string {
+  return nameHash(fieldNameSource(sig));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Structural hash
 // ─────────────────────────────────────────────────────────────────────────────

@@ -657,6 +657,7 @@ shared/
 
 | Version | Date | Phases | Key Changes |
 |---------|------|--------|-------------|
+| 1.5.0 | 2026-06-27 | AL (read path) | Crowdsourced "shared brain" — global fingerprint tier on Supabase (migration 006) + new waterfall Step 1.7 + IDB v5 cache with 7-day TTL. Every user can now benefit from canonical_key mappings other users have taught. Quorum gate: vote_count ≥ 3 OR template-key bypass. Privacy: only structural hashes cross the boundary; values never leave the browser. |
 | 1.4.1 | 2026-06-27 | AJ + AK | Doc reconciliation through Phase AI; extended E2E coverage (date/iframe/multi-checkbox); pattern-based sensitive-domain blocklist expanded (insurance, pension, medicare, .gov, courts, police) + per-domain overrides via `UserSettings.domainOverrides` |
 | 1.4.0 | 2026-06-26 | AH, AI + E2E hardening | Resume RAG (keyword retrieval), native ATS parser awareness (burst watcher + audit banner + skipIfFilled + teal badge), Playwright E2E harness, 4 reliability fixes (Gemini timeout, parse-error UI, radio-checked guard, dittoFilled preservation) |
 | 1.3.0 | 2026-06-25 | AF, AG | Pill-overwrite fix, dropdown learning always-prompt, async dropdown polling, Supabase auth flood fix |

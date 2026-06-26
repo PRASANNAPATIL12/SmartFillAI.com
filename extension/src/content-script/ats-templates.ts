@@ -203,3 +203,27 @@ export const ATS_TEMPLATES: ReadonlyArray<AtsTemplate> = [
  * but aren't checked separately yet; the bundle-level version is sufficient.
  */
 export const ATS_TEMPLATES_BUNDLE_VERSION = 1;
+
+// ── Phase AL — helper for the crowdsourced global tier ───────────────────────
+// Returns true when `canonical_key` is one of the keys ANY ATS template
+// uses. Used by global-fingerprint-client to bypass the quorum gate for
+// template-listed keys: a key we already ship at confidence 0.95 in a
+// template is safe enough to accept from the global tier with vote_count < 3.
+
+let _TEMPLATE_KEYS: Set<string> | null = null;
+
+function buildTemplateKeySet(): Set<string> {
+  const set = new Set<string>();
+  for (const template of ATS_TEMPLATES) {
+    for (const f of template.fields) {
+      if (f.canonicalKey) set.add(f.canonicalKey);
+    }
+  }
+  return set;
+}
+
+export function isTemplateCanonicalKey(canonical: string): boolean {
+  if (!canonical) return false;
+  if (_TEMPLATE_KEYS === null) _TEMPLATE_KEYS = buildTemplateKeySet();
+  return _TEMPLATE_KEYS.has(canonical);
+}

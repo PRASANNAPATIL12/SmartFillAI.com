@@ -1,14 +1,15 @@
 /**
  * Field Matcher — deterministic, local, zero network calls.
  *
- * Step 1   : SKIP            — exclude fields we should never touch
- * Step 1.5 : OPTION-SET      — decisive dropdown options override label regex
+ * Step 1   : SKIP             — exclude fields we should never touch
+ * Step 1.5 : OPTION-SET       — decisive dropdown options override label regex
  * Step 1.6 : FORM FINGERPRINT — whole-form match across ATS family (Phase AD.1)
- * Step 2   : FIELD CACHE     — per-domain field fingerprint → known match
- * Step 3   : ESSAY           — detect long-form AI-generation candidates
- * Step 4   : RULES           — autocomplete → inputType → text patterns
- * Step 5   : EMBEDDING       — option-text semantic match (lives in fillSelect)
- * Step 6   : LLM             — Gemini ANSWER_FIELD (lives in answer-field.ts)
+ * Step 1.7 : GLOBAL CONSENSUS — crowdsourced field mappings (Phase AL)
+ * Step 2   : FIELD CACHE      — per-domain field fingerprint → known match
+ * Step 3   : ESSAY            — detect long-form AI-generation candidates
+ * Step 4   : RULES            — autocomplete → inputType → text patterns
+ * Step 5   : EMBEDDING        — option-text semantic match (lives in fillSelect)
+ * Step 6   : LLM              — Gemini ANSWER_FIELD (lives in answer-field.ts)
  *
  * matchField itself is sync — async work (loading fingerprints, embeddings,
  * LLM) happens outside and is passed in via parameters.
@@ -19,7 +20,9 @@ import { resolveCountry } from './content-script/country-aliases';
 import { expandValueAliases, hasValueAliases } from './content-script/value-aliases';
 import { validateLearnedValue } from './content-script/value-validation';
 import type { FormFingerprint } from './content-script/form-fingerprinter';
-import { findFingerprintEntry } from './content-script/form-fingerprinter';
+import { findFingerprintEntry, fieldHashFor } from './content-script/form-fingerprinter';
+import type { GlobalFingerprintCacheEntry } from './storage/idb';
+import { globalConsensusForField } from './background/global-fingerprint-client';
 
 /**
  * Phase AD.2 — confidence band thresholds. Tuned so:
@@ -116,12 +119,17 @@ function isIncidentalNounMatch(sig: FieldSignature, canonical: string): boolean 
 /**
  * Match a single field against the user's profile.
  *
- * @param sig         Extracted field signature
- * @param profile     User's profile entries
- * @param cache       Domain-level field cache (empty Map is fine on first visit)
- * @param domain      Current page hostname (for cache fingerprint)
- * @param fingerprint Loaded form-level fingerprint for this page, if any
- *                    (Phase AD.1 — one fingerprint per page, applied to every field)
+ * @param sig             Extracted field signature
+ * @param profile         User's profile entries
+ * @param cache           Domain-level field cache (empty Map is fine on first visit)
+ * @param domain          Current page hostname (for cache fingerprint)
+ * @param fingerprint     Loaded form-level fingerprint for this page, if any
+ *                          (Phase AD.1 — one fingerprint per page, applied to every field)
+ * @param globalConsensus Crowdsourced global-tier consensus for this fingerprint
+ *                          key, if any (Phase AL). Used as Step 1.7 between the
+ *                          per-user fingerprint cache and the per-field cache —
+ *                          lets a never-before-seen-locally form get matched if
+ *                          enough OTHER users have taught the same field.
  */
 export function matchField(
   sig: FieldSignature,
@@ -129,8 +137,9 @@ export function matchField(
   cache: Map<string, FieldCacheEntry>,
   domain: string,
   fingerprint?: FormFingerprint,
+  globalConsensus?: GlobalFingerprintCacheEntry,
 ): MatchResult {
-  return withFillAction(matchFieldInternal(sig, profile, cache, domain, fingerprint));
+  return withFillAction(matchFieldInternal(sig, profile, cache, domain, fingerprint, globalConsensus));
 }
 
 function matchFieldInternal(
@@ -139,6 +148,7 @@ function matchFieldInternal(
   cache: Map<string, FieldCacheEntry>,
   domain: string,
   fingerprint?: FormFingerprint,
+  globalConsensus?: GlobalFingerprintCacheEntry,
 ): MatchResult {
   // Step 1: SKIP
   const skipReason = shouldSkip(sig);
@@ -164,6 +174,29 @@ function matchFieldInternal(
   if (fingerprint) {
     const fpMatch = fingerprintMatch(sig, fingerprint, profile);
     if (fpMatch) return fpMatch;
+  }
+
+  // Step 1.7: Crowdsourced consensus (Phase AL) — even when THIS user has
+  // never filled this form, OTHER users may have. If the global tier has
+  // enough votes (≥3) for the same field signature, or the consensus key is
+  // already a known ATS-template key, accept it at confidence 0.85.
+  // Privacy: this read uses only the fingerprint key + this field's hash;
+  // no user values are sent.
+  if (globalConsensus) {
+    const fpGlobal = globalConsensusForField(globalConsensus, fieldHashFor(sig));
+    if (fpGlobal.canonical) {
+      const profileEntry = findDefaultEntry(profile, fpGlobal.canonical);
+      if (profileEntry) {
+        return {
+          status:           'MATCHED',
+          profileEntryId:   profileEntry.id,
+          confidence:       0.85,
+          reason:           `global:${globalConsensus.atsId} (votes=${fpGlobal.voteCount}${fpGlobal.isTemplate ? ',template' : ''})`,
+          matchStep:        1,
+          alternativeCount: findAllValidEntries(profile, fpGlobal.canonical).length,
+        };
+      }
+    }
   }
 
   // Step 2: Per-field cache lookup
