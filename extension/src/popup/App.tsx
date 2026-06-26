@@ -7,8 +7,11 @@ import SettingsScreen from './components/SettingsScreen';
 import ResumeScreen    from './components/ResumeScreen';
 import DocumentsScreen from './components/DocumentsScreen';
 import AnswersScreen   from './components/AnswersScreen';
+import ConsentScreen   from './components/ConsentScreen';
 
-type Screen = 'loading' | 'login' | 'home' | 'profile' | 'settings' | 'resume' | 'documents' | 'answers';
+type Screen = 'loading' | 'login' | 'home' | 'profile' | 'settings' | 'resume' | 'documents' | 'answers' | 'consent';
+
+const CONSENT_SHOWN_KEY = 'global_consent_shown';
 
 interface SessionInfo {
   userId:    string;
@@ -43,17 +46,29 @@ export default function App(): React.ReactElement {
         hasSession = !!s;
       } catch { /* app works without a session */ }
 
-      // On first install (no session + empty profile), show login to encourage sign-in.
-      // If the user has local data but no session, respect local-only mode — go to home.
-      if (!hasSession) {
+      if (hasSession) {
+        // Signed in — check if the Phase AM consent dialog has been shown on this device.
+        // Returning users who were signed in before Phase AM shipped see it once here.
         try {
-          const profile = await sendToBackground<{ id: string }[]>('GET_PROFILE');
-          if (profile.length === 0) {
-            setScreen('login');
+          const stored = await chrome.storage.local.get(CONSENT_SHOWN_KEY);
+          if (!stored[CONSENT_SHOWN_KEY]) {
+            setScreen('consent');
             return;
           }
         } catch { /* fall through to home */ }
+        setScreen('home');
+        return;
       }
+
+      // On first install (no session + empty profile), show login to encourage sign-in.
+      // If the user has local data but no session, respect local-only mode — go to home.
+      try {
+        const profile = await sendToBackground<{ id: string }[]>('GET_PROFILE');
+        if (profile.length === 0) {
+          setScreen('login');
+          return;
+        }
+      } catch { /* fall through to home */ }
 
       setScreen('home');
     }
@@ -63,7 +78,10 @@ export default function App(): React.ReactElement {
   function handleLoginSuccess(email: string): void {
     sendToBackground<SessionInfo | null>('GET_SESSION').then(s => setSession(s)).catch(() => {});
     void email;
-    setScreen('home');
+    // Phase AM — show consent dialog on first sign-in on this device
+    chrome.storage.local.get(CONSENT_SHOWN_KEY).then(stored => {
+      setScreen(stored[CONSENT_SHOWN_KEY] ? 'home' : 'consent');
+    }).catch(() => setScreen('home'));
   }
 
   function handleSignOut(): void {
@@ -86,6 +104,14 @@ export default function App(): React.ReactElement {
           onSuccess={handleLoginSuccess}
           onSkip={() => setScreen('home')}
         />
+      </SubpageFrame>
+    );
+  }
+
+  if (screen === 'consent') {
+    return (
+      <SubpageFrame>
+        <ConsentScreen onDone={() => setScreen('home')} />
       </SubpageFrame>
     );
   }

@@ -10,6 +10,7 @@ import {
   refreshSessionIfNeeded,
 } from './auth-manager';
 import { pushSyncQueue, pullFromCloud, pushFormFingerprints, pullFormFingerprints } from './sync-engine';
+import { contributeToGlobal } from './global-fingerprint-writer';
 import { parseResumeText, parseResumePdf, createEntriesFromResume } from './resume-parser';
 import { generateEssay } from './essay-generator';
 import { classifyFields, type FieldClassifySpec } from './llm-classifier';
@@ -52,6 +53,7 @@ import {
   loadFieldCacheForDomain,
   incrementCacheUse,
   evictStaleCacheEntries,
+  evictStaleGlobalFpCache,
   type FieldCacheEntry,
   saveDocument,
   getDocumentMeta,
@@ -196,13 +198,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === SYNC_ALARM) {
     evictStaleCacheEntries().catch(() => {});
+    evictStaleGlobalFpCache().catch(() => {});  // Phase AM — evict 7-day-old global cache entries
     refreshSessionIfNeeded().catch(() => {});
     // Push pending local changes to Supabase when cloud sync is enabled.
     // Phase AD.3 — also push form fingerprints learned since the last cycle.
+    // Phase AM  — also contribute learned fingerprints to global shared brain.
     getSettings().then(s => {
       if (s.cloudSync) {
         pushSyncQueue().catch(() => {});
         pushFormFingerprints().catch(() => {});
+        // Runs AFTER per-user push so local data is fresh before sharing
+        if (s.contributeToGlobal !== false) {
+          contributeToGlobal().catch(() => {});
+        }
       }
     }).catch(() => {});
   }

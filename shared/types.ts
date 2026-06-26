@@ -319,6 +319,14 @@ export interface UserSettings {
     provider: 'groq' | 'gemini';
     defaultModel?: string;
   };
+
+  /**
+   * Contribute anonymised field-structure metadata to the global shared brain
+   * (Phase AM). When ON, the 5-min sync alarm uploads learned fingerprints via
+   * contribute_fingerprint() — only field hashes + canonical_key, never values.
+   * Defaults to true (opt-out model); shown in Settings → Community.
+   */
+  contributeToGlobal?: boolean;
 }
 
 // ============================================================================

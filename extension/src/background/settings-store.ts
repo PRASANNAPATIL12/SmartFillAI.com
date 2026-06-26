@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS: UserSettings = {
   aiProvider: {
     provider: 'groq',
   },
+  contributeToGlobal: true,  // Phase AM — opt-out; consent dialog explains on first sign-in
 };
 
 export async function getSettings(): Promise<UserSettings> {

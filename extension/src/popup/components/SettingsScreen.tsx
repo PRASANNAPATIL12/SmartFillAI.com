@@ -21,7 +21,7 @@ export default function SettingsScreen({ onBack }: Props): React.ReactElement {
   }, []);
 
   async function toggleSetting(
-    key: keyof Pick<UserSettings, 'autoSave' | 'showGhostText' | 'blockSensitiveDomains' | 'cloudSync'>
+    key: keyof Pick<UserSettings, 'autoSave' | 'showGhostText' | 'blockSensitiveDomains' | 'cloudSync' | 'contributeToGlobal'>
   ): Promise<void> {
     if (!settings) return;
     const newValue = !settings[key];
@@ -113,6 +113,21 @@ export default function SettingsScreen({ onBack }: Props): React.ReactElement {
                 />
               </div>
             </div>
+            {/* Community — only shown when cloud sync is ON (contribution requires authentication) */}
+            {settings.cloudSync && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Community</p>
+                <div className="glass-card overflow-hidden">
+                  <ToggleRow
+                    label="Help improve SmartFillAI for everyone"
+                    description="Shares only field structure — which label maps to which field type. Never shares your name, email, or any personal value."
+                    checked={settings.contributeToGlobal ?? true}
+                    onChange={() => toggleSetting('contributeToGlobal')}
+                    last
+                  />
+                </div>
+              </div>
+            )}
             <div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 px-1">Autofill</p>
               <div className="glass-card overflow-hidden">
