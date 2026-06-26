@@ -46,3 +46,15 @@ Columns:
 **Cumulative passing rate:** 21 / 21 E2E tests (T1–T8, T11–T12, AJ.3).
 
 ---
+
+## 2026-06-27 — Phase AK closeout (sensitive-domain blocklist)
+
+| Suite | Pass | Fail | Total | Notes |
+|---|---|---|---|---|
+| `sensitive-domain.test.ts` (AK) | 35 | 0 | 35 | New unit suite — regex covers banks/health/insurance/pension/medicare/.gov/police/courts; per-domain override beats regex in both directions |
+
+**Cumulative unit tests:** 337 / 337 passing.
+
+**No new E2E specs** for AK — the blocklist is a unit-testable pure function. Live verification just confirms the regex + override path is reachable in `runScan()`.
+
+---

@@ -103,10 +103,26 @@ let autoSave               = true;  // default; overwritten after GET_SETTINGS r
 let blockSensitiveDomains  = true;  // default safe; overwritten after GET_SETTINGS resolves
 
 // Patterns matched against window.location.hostname when blockSensitiveDomains is on.
-// Deliberately conservative — only obvious finance/health/gov sites.
-const SENSITIVE_HOSTNAME_RE = /\b(bank(ing)?|paypal|chase|wellsfargo|capitalone|citibank|usbank|fidelity|vanguard|schwab|etrade|robinhood|brokerage|mychart|hospital|healthcare|irs\.gov|ssa\.gov)\b/;
+// Pattern-based by design (per Phase AK decision): broad coverage with low
+// hand-curation cost. Per-domain overrides (via UserSettings.domainOverrides)
+// let users re-enable or force-block any specific hostname.
+const SENSITIVE_HOSTNAME_RE = /\b(bank(ing)?|paypal|chase|wellsfargo|capitalone|citibank|usbank|fidelity|vanguard|schwab|etrade|robinhood|brokerage|mychart|hospital|healthcare|health\.|insurance|pension|medicare|medicaid|tax\b|police|courthouse|courts)\b|\.gov(\.|$)/;
 
+let domainOverrides: Record<string, { enabled: boolean; autoFill: boolean }> = {};
+
+/**
+ * Decide whether the current page should be considered sensitive (and thus
+ * skipped by the autofill flow). Per-domain overrides take priority over the
+ * regex pattern in BOTH directions:
+ *   - `enabled: true`  → unblock even if regex matches (user opted in)
+ *   - `enabled: false` → block even if regex doesn't match (user opted out)
+ */
 function isSensitiveDomain(hostname: string): boolean {
+  const override = domainOverrides[hostname];
+  if (override !== undefined) {
+    // user explicitly set this domain — they win over the regex
+    return !override.enabled;
+  }
   return SENSITIVE_HOSTNAME_RE.test(hostname);
 }
 
@@ -307,6 +323,7 @@ async function init(): Promise<void> {
   profile                  = fetchedProfile.status  === 'fulfilled' ? fetchedProfile.value  : [];
   autoSave                 = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.autoSave              : true;
   blockSensitiveDomains    = fetchedSettings.status === 'fulfilled' ? fetchedSettings.value.blockSensitiveDomains : true;
+  domainOverrides          = fetchedSettings.status === 'fulfilled' ? (fetchedSettings.value.domainOverrides ?? {}) : {};
 
   // Honour the sensitive-domain blocklist before touching the page.
   if (blockSensitiveDomains && isSensitiveDomain(window.location.hostname)) {

@@ -657,6 +657,7 @@ shared/
 
 | Version | Date | Phases | Key Changes |
 |---------|------|--------|-------------|
+| 1.4.1 | 2026-06-27 | AJ + AK | Doc reconciliation through Phase AI; extended E2E coverage (date/iframe/multi-checkbox); pattern-based sensitive-domain blocklist expanded (insurance, pension, medicare, .gov, courts, police) + per-domain overrides via `UserSettings.domainOverrides` |
 | 1.4.0 | 2026-06-26 | AH, AI + E2E hardening | Resume RAG (keyword retrieval), native ATS parser awareness (burst watcher + audit banner + skipIfFilled + teal badge), Playwright E2E harness, 4 reliability fixes (Gemini timeout, parse-error UI, radio-checked guard, dittoFilled preservation) |
 | 1.3.0 | 2026-06-25 | AF, AG | Pill-overwrite fix, dropdown learning always-prompt, async dropdown polling, Supabase auth flood fix |
 | 1.2.0 | 2026-06-24 | AD, AE | Form fingerprinting, ATS template seeding, embedded ATS detection (Databricks fix), char-by-char retry |
