@@ -77,17 +77,23 @@ export default function DocumentsScreen({ onBack }: Props): React.ReactElement {
       for (let i = 0; i < binary.length; i++) str += String.fromCharCode(binary[i]);
       const fileDataBase64 = btoa(str);
 
-      await sendToBackground('UPLOAD_DOCUMENT', {
+      const result = await sendToBackground('UPLOAD_DOCUMENT', {
         docType: uploadType,
         label: file.name.replace(/\.[^.]+$/, ''),
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         fileDataBase64,
-      });
+      }) as { parseError?: string } | undefined;
 
-      setStatus('done');
       await refresh();
-      setTimeout(() => setStatus('idle'), 2000);
+      if (result?.parseError) {
+        setError(result.parseError);
+        setStatus('error');
+        setTimeout(() => setStatus('idle'), 6000);
+      } else {
+        setStatus('done');
+        setTimeout(() => setStatus('idle'), 2000);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
       setStatus('error');

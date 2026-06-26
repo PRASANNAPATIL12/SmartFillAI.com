@@ -65,7 +65,17 @@ export type FillResult = 'ok' | 'failed' | 'ats_skipped';
  * Used by the skipIfFilled gate and the ATS pre-fill snapshot.
  */
 export function readElementValue(el: HTMLElement): string {
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+  if (el instanceof HTMLInputElement) {
+    // Radio / checkbox: HTML `value` attribute exists even when unchecked
+    // (e.g., <input type="radio" value="Yes">). Reading `value` would treat
+    // every unchecked radio as "already filled" — wrong. Return the value
+    // only when checked; empty otherwise.
+    if (el.type === 'radio' || el.type === 'checkbox') {
+      return el.checked ? (el.value || 'on') : '';
+    }
+    return el.value ?? '';
+  }
+  if (el instanceof HTMLTextAreaElement) {
     return el.value ?? '';
   }
   if (el instanceof HTMLSelectElement) {

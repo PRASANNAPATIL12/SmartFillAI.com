@@ -1312,7 +1312,13 @@ function applyHint(
     }
     // If hasCommittedValue, leave dittoFilled markers alone — they're correct.
   } else {
-    delete el.dataset.dittoFilled;
+    // Preserve dittoFilled IF the field still has the value we wrote to it.
+    // Without this guard, a re-scan after fill (triggered ~600ms post-fill)
+    // would wipe the flag and the audit would report 0 SmartFillAI fills.
+    const stillFilled = readElementValue(el).trim().length > 0;
+    if (!stillFilled) {
+      delete el.dataset.dittoFilled;
+    }
   }
 
   // Clear previous state

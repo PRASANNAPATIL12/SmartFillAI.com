@@ -95,9 +95,18 @@ export async function parseResumePdf(pdfBase64: string): Promise<ResumeParseResu
     },
   });
 
-  const result = await model.generateContent([
-    { inlineData: { mimeType: 'application/pdf', data: pdfBase64 } },
-    PARSE_PROMPT,
+  // 20s ceiling so a rate-limited Gemini call can't hang the upload UI forever.
+  // The SDK retries internally on 429; without this race the user sees a 40-60s
+  // spinner before the error surfaces. Fail fast and let the caller fall back.
+  const PARSE_TIMEOUT_MS = 20_000;
+  const result = await Promise.race([
+    model.generateContent([
+      { inlineData: { mimeType: 'application/pdf', data: pdfBase64 } },
+      PARSE_PROMPT,
+    ]),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Gemini parse timed out after ${PARSE_TIMEOUT_MS}ms`)), PARSE_TIMEOUT_MS)
+    ),
   ]);
 
   try {

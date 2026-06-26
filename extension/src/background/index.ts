@@ -750,6 +750,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
 
     let extractedText: string | null = null;
     let resumeSections: import('@shared/types').ResumeSection[] | undefined;
+    let parseError: string | undefined;
 
     // Auto-parse resume PDFs to update profile entries
     if (docType === 'resume') {
@@ -769,6 +770,12 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
           refreshCSCache().catch(() => {});
         }
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        parseError = /quota|rate.?limit|429/i.test(msg)
+          ? 'AI quota exceeded — file saved, profile not extracted. Try again later or update API key.'
+          : /timeout|timed out/i.test(msg)
+          ? 'Parse timed out — file saved, profile not extracted.'
+          : 'Parse failed — file saved, profile not extracted.';
         console.warn('[SmartFillAI] resume parse failed — document saved but no profile entries created:', err);
       }
     }
@@ -800,7 +807,7 @@ const handlers: Partial<Record<MessageType, HandlerFn>> = {
     }
 
     const { fileData: _, ...meta } = doc;
-    return meta;
+    return parseError ? { ...meta, parseError } : meta;
   },
 
   UPDATE_DOCUMENT_META: async (payload) => {

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Greenhouse-like Job Application</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    .field { margin: 1rem 0; }
+    label { display: block; margin-bottom: 0.25rem; font-weight: 500; }
+    input[type=text], input[type=email], input[type=tel], textarea, select {
+      width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;
+    }
+    textarea { min-height: 6rem; }
+    .ats-greenhouse { background: #f5f7fa; padding: 1rem; border-radius: 8px; }
+  </style>
+  <!-- ATS fingerprint marker -->
+  <meta name="generator" content="Greenhouse">
+</head>
+<body class="ats-greenhouse" data-source="greenhouse">
+  <h1>Apply: Senior Engineer</h1>
+
+  <form id="application_form" data-form-id="greenhouse-test">
+    <h2>Personal Info</h2>
+
+    <div class="field">
+      <label for="first_name">First Name *</label>
+      <input type="text" id="first_name" name="job_application[first_name]" autocomplete="given-name" required>
+    </div>
+
+    <div class="field">
+      <label for="last_name">Last Name *</label>
+      <input type="text" id="last_name" name="job_application[last_name]" autocomplete="family-name" required>
+    </div>
+
+    <div class="field">
+      <label for="email">Email *</label>
+      <input type="email" id="email" name="job_application[email]" autocomplete="email" required>
+    </div>
+
+    <div class="field">
+      <label for="phone">Phone</label>
+      <input type="tel" id="phone" name="job_application[phone]" autocomplete="tel">
+    </div>
+
+    <div class="field">
+      <label for="resume">Resume / CV *</label>
+      <input type="file" id="resume" name="job_application[resume]" accept=".pdf,.doc,.docx">
+    </div>
+
+    <h2>Location</h2>
+
+    <div class="field">
+      <label for="address">Street Address</label>
+      <input type="text" id="address" name="job_application[address]" autocomplete="street-address">
+    </div>
+
+    <div class="field">
+      <label for="city">City</label>
+      <input type="text" id="city" name="job_application[city]" autocomplete="address-level2">
+    </div>
+
+    <div class="field">
+      <label for="state">State / Province</label>
+      <input type="text" id="state" name="job_application[state]" autocomplete="address-level1">
+    </div>
+
+    <div class="field">
+      <label for="country">Country</label>
+      <select id="country" name="job_application[country]" autocomplete="country">
+        <option value="">Select country</option>
+        <option value="US">United States</option>
+        <option value="IN">India</option>
+        <option value="UK">United Kingdom</option>
+        <option value="CA">Canada</option>
+      </select>
+    </div>
+
+    <h2>Experience</h2>
+
+    <div class="field">
+      <label for="current_company">Current Company</label>
+      <input type="text" id="current_company" name="job_application[current_company]">
+    </div>
+
+    <div class="field">
+      <label for="current_title">Current Title</label>
+      <input type="text" id="current_title" name="job_application[current_title]">
+    </div>
+
+    <div class="field">
+      <label for="years_experience">Years of Experience</label>
+      <select id="years_experience" name="job_application[years_experience]">
+        <option value="">Select</option>
+        <option value="0-2">0-2 years</option>
+        <option value="3-5">3-5 years</option>
+        <option value="6-10">6-10 years</option>
+        <option value="10+">10+ years</option>
+      </select>
+    </div>
+
+    <h2>Work Authorization</h2>
+
+    <div class="field">
+      <label>Are you legally authorized to work in the United States?</label>
+      <label><input type="radio" name="work_auth_us" value="Yes"> Yes</label>
+      <label><input type="radio" name="work_auth_us" value="No"> No</label>
+    </div>
+
+    <div class="field">
+      <label>Will you now or in the future require sponsorship?</label>
+      <label><input type="radio" name="sponsorship" value="Yes"> Yes</label>
+      <label><input type="radio" name="sponsorship" value="No"> No</label>
+    </div>
+
+    <h2>Questions</h2>
+
+    <div class="field">
+      <label for="why_interested">Why are you interested in this role?</label>
+      <textarea id="why_interested" name="job_application[why_interested]" rows="4"></textarea>
+    </div>
+
+    <div class="field">
+      <label for="cover_letter">Cover Letter</label>
+      <textarea id="cover_letter" name="job_application[cover_letter]" rows="6"></textarea>
+    </div>
+
+    <button type="submit">Submit Application</button>
+  </form>
+</body>
+</html>

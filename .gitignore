@@ -54,3 +54,12 @@ secrets/
 # Chrome extension artifacts
 *.crx
 *.pem
+
+# E2E test artifacts (generated each run)
+e2e/screenshots/
+e2e/report/
+e2e/test-results/
+e2e/playwright-report/
+
+# Personal resumes (do not commit — user-uploaded test data)
+Prasanna_Patil_Resume.pdf
