@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Extended Test Form — date, checkboxes, iframe</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    .field { margin: 1rem 0; }
+    label { display: block; margin-bottom: 0.25rem; font-weight: 500; }
+    input[type=text], input[type=email], input[type=tel], input[type=date], textarea, select {
+      width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px;
+    }
+    .checkbox-group { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+    .checkbox-group label { font-weight: normal; margin: 0; }
+    iframe { width: 100%; height: 320px; border: 1px solid #ddd; border-radius: 6px; }
+  </style>
+  <meta name="generator" content="Greenhouse">
+</head>
+<body data-source="greenhouse">
+  <h1>Extended Test Form</h1>
+
+  <form id="application_form">
+    <!-- Top-level identity -->
+    <div class="field">
+      <label for="first_name">First Name *</label>
+      <input type="text" id="first_name" name="first_name" autocomplete="given-name" required>
+    </div>
+
+    <div class="field">
+      <label for="email">Email *</label>
+      <input type="email" id="email" name="email" autocomplete="email" required>
+    </div>
+
+    <!-- Date fields (for T-date test) -->
+    <div class="field">
+      <label for="dob">Date of Birth</label>
+      <input type="date" id="dob" name="date_of_birth" autocomplete="bday">
+    </div>
+
+    <div class="field">
+      <label for="start_date">Available Start Date</label>
+      <input type="date" id="start_date" name="start_date">
+    </div>
+
+    <!-- Multi-checkbox group (for T-checkbox test) -->
+    <div class="field">
+      <label>Skills (check all that apply)</label>
+      <div class="checkbox-group" id="skills_group">
+        <label><input type="checkbox" name="skills" value="javascript"> JavaScript</label>
+        <label><input type="checkbox" name="skills" value="typescript"> TypeScript</label>
+        <label><input type="checkbox" name="skills" value="react"> React</label>
+        <label><input type="checkbox" name="skills" value="nodejs"> Node.js</label>
+        <label><input type="checkbox" name="skills" value="python"> Python</label>
+        <label><input type="checkbox" name="skills" value="java"> Java</label>
+        <label><input type="checkbox" name="skills" value="powershell"> PowerShell</label>
+        <label><input type="checkbox" name="skills" value="sql"> SQL</label>
+        <label><input type="checkbox" name="skills" value="mongodb"> MongoDB</label>
+      </div>
+    </div>
+
+    <!-- Same-origin iframe with its own form (for T-iframe test) -->
+    <div class="field">
+      <label>Additional info (in iframe)</label>
+      <iframe id="extra_iframe" src="iframe-child.html" name="extra_iframe"></iframe>
+    </div>
+
+    <button type="submit">Submit</button>
+  </form>
+</body>
+</html>

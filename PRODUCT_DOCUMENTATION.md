@@ -1,10 +1,10 @@
 # SmartFillAI — Complete Product Documentation
 
-> **Last Updated:** 2026-06-25 (Phase AG complete)
-> **Status:** Production-Ready — 28 commits ahead of origin/main, pending push
+> **Last Updated:** 2026-06-26 (Phase AI complete + E2E hardening)
+> **Status:** Production-Ready — all commits pushed to origin/main
 > **Repository:** PRASANNAPATIL12/SmartFillAI
 > **Extension Type:** Manifest V3 (Chrome, Edge, Brave, Arc)
-> **Version:** 1.3.0
+> **Version:** 1.4.0
 
 ---
 
@@ -42,23 +42,28 @@ Detects ALL standard and custom input types:
 
 **Discovery approach:** MutationObserver watches DOM changes → `extractAllFields()` gathers both native elements and ARIA widgets → de-duplication prevents double-counting when native elements have ARIA roles.
 
-### 1.2 The Matching Waterfall — 7 Steps
+### 1.2 The Matching Waterfall
 
-Every detected field passes through this cascade. **Steps are tried in order; first confident match wins.**
+Every detected field passes through this cascade. **Tiers are tried in order; first confident match wins.** Implementation lives in `extension/src/matcher.ts::matchFieldInternal()` for Tiers 1–4 plus the option-set/fingerprint short-circuits; Tiers 5–6 run async via background messages from `content-script/index.ts`.
 
-| Step | Name | Latency | Coverage | Method |
+| Tier | Name | Latency | Coverage | Method |
 |------|------|---------|----------|--------|
-| 1 | **SKIP** | <1ms | ~10% skipped | Password/hidden/search/captcha rules |
-| 2 | **FINGERPRINT** | ~1ms | ~60% on returning forms | IndexedDB form-fingerprint cache |
-| 3 | **ESSAY** | <1ms | ~5% | Large textarea + question-label patterns |
-| 4 | **RULES** | ~5ms | ~80% | 200+ autocomplete/label/keyword patterns |
-| 5 | **EMBEDDINGS** | ~30ms | ~92% | MiniLM-L6-v2 cosine similarity (local, threshold 0.75) |
-| 6 | **LLM CLASSIFY** | ~500ms | ~97% | Batched GROQ/Gemini prompt (threshold 0.70) |
-| 7 | **Q&A REPLAY** | ~1ms | question fields | Remembered answer for question-label match |
+| 1   | **SKIP**            | <1ms   | ~10% skipped              | Password/hidden/search/captcha/credit-card rules (`shouldSkip()`) |
+| 1.5 | **OPTION-SET**      | <1ms   | ~5%                       | Gender/work-auth/yes-no detected by exact option set (`classifyByOptionSet()`) |
+| 1.6 | **FINGERPRINT**     | ~1ms   | ~60% on returning forms   | IndexedDB form-fingerprint cache (`fingerprintMatch()` — Phase AD.1) |
+| 2   | **PER-FIELD CACHE** | ~1ms   | ~30%                      | `cacheMatch()` for prior-page-visit field hashes |
+| 3   | **ESSAY**           | <1ms   | ~5%                       | Large textarea + 13 question-label patterns (`isEssay()`) |
+| 4   | **RULES**           | ~5ms   | ~80%                      | 200+ autocomplete/label/keyword patterns (`ruleMatch()`) |
+| 5   | **EMBEDDINGS**      | ~30ms  | ~92%                      | MiniLM-L6-v2 cosine similarity (local, threshold **0.75**) |
+| 6   | **LLM CLASSIFY**    | ~500ms | ~97%                      | Batched GROQ/Gemini prompt (threshold **0.70**) |
 
-**Cost:** Steps 1–5 are entirely free (no API calls, no network). Step 6 costs ~$0.0001/batch. Step 7 is free (local cache).
+**Fill bands:** `FILL_THRESHOLD = 0.90` / `REVIEW_THRESHOLD = 0.70` (set in `matcher.ts`).
 
-**Form data policy:** Absolutely no form values (names, emails, phone numbers) are ever sent outside the browser in Steps 1–6. Step 6 sends ONLY field labels (e.g. "First Name", "Work Authorization") with no user data values.
+**Q&A replay note:** an earlier doc revision referred to a distinct Step 7 "Q&A Replay" tier. In the current code, Q&A replay is **not** a waterfall step — it's a fill-time helper handled inside the essay/LLM answer handler (`background/answer-field.ts`). When a field's status is `ESSAY` or `UNKNOWN` and the user has previously answered a similar question, the answer is replayed verbatim before any model call (zero API cost). See §1.7 for the three essay tiers.
+
+**Cost:** Tiers 1–5 are entirely free (no API calls, no network). Tier 6 costs ~$0.0001/batch.
+
+**Form data policy:** Absolutely no form values (names, emails, phone numbers) are ever sent outside the browser in Tiers 1–6. Tier 6 sends ONLY field labels (e.g. "First Name", "Work Authorization") with no user data values.
 
 ### 1.3 Fill Execution — 4-Level Retry Cascade
 
@@ -197,6 +202,8 @@ Tier 3 — Narrative, no prior answer:
 
 **Company detection:** JSON-LD Organization → og:site_name → ATS URL keywords → `<title>` → hostname (cached per page load).
 
+**Resume RAG (Phase AH — shipped):** When the user uploads a resume, the parser extracts structured `resumeSections[]` (summary, experience, education, skills, projects, certifications, visa/compensation/narrative). At answer time, `background/resume-sections.ts::selectRelevantSections()` matches the question's keywords against 8 `SectionRoute` patterns and returns only the 1–2 most relevant sections (~3000-character cap). This keeps the Gemini context window focused and the answers grounded — without sending the whole resume on every call. Retrieval method today is **keyword-based**; an embedding-based variant is on the future roadmap.
+
 ### 1.8 Resume Processing
 
 | Format | Parser | Notes |
@@ -232,6 +239,47 @@ Tier 3 — Narrative, no prior answer:
 | Status badge | `FILL_FAILED` marker | Dropdown fill failed (debug) |
 
 **Pill safety:** `_stickyPillActive` flag prevents hover/focus from replacing an active Update-or-Add or Learn pill. Pill is sticky until dismissed by user action or 8s timeout.
+
+### 1.11 Native ATS Parser Awareness (Phase AI)
+
+Many ATSes (Greenhouse, Workday, Lever, Ashby) parse an uploaded resume server-side and auto-fill name/email/phone fields via their own React state. SmartFillAI used to overwrite those fields and race against the ATS parser. Phase AI makes the extension cooperative:
+
+| Component | Location | Role |
+|---|---|---|
+| **Burst watcher** | `content-script/ats-parser-watcher.ts` | Capture-phase listener on `input`/`change` events. Threshold: ≥3 distinct fields within 5s → "ATS parser is running". Then waits 1.5s of silence (hard ceiling 8s) before signalling settle. |
+| **`skipIfFilled` gate** | `filler.ts::fillElement()` | When `{ skipIfFilled: true }`, if the field has a non-empty value not set by SmartFillAI (`!el.dataset.dittoFilled`), tag `dataset.atsFilledNative='true'` and return `'ats_skipped'` — preserve ATS data, don't overwrite. |
+| **`auditFills()`** | `index.ts` | After fill + 3.5s combobox settle, iterate `matchMap` and categorize each field as `ats / sfa_ok / sfa_failed / skipped / empty`. |
+| **Audit banner** | `overlay-banner.ts::showAuditBanner()` | Replaces the simple success banner: `"✓ 8 by ATS · 7 by SmartFillAI · 5 empty"`. Auto-dismisses after 3s. |
+| **Teal badge** | `overlay.ts` (`#06b6d4`, cyan-500) | New `.sfa-badge.ats` variant — distinct from green (filled), yellow (review), grey (empty). |
+
+**Flow on Fill click:**
+
+```
+banner Fill click
+  ↓
+snapshot pre-existing values (atsPreFillValues map)
+arm atsParserWatcher
+  ↓ (next frame)
+await atsParserWatcher.waitForSettle()   // resolves on:
+                                          //  - 5s no burst (fast path), OR
+                                          //  - 1.5s silence after burst, OR
+                                          //  - 8s hard ceiling
+  ↓
+fillAll() with skipIfFilled:true on every fillElement() call
+  ↓
++3500ms: auditFills() + showAuditBanner()
+```
+
+### 1.12 Recent Reliability Fixes (2026-06-26)
+
+Four bugs caught and fixed by the new E2E harness:
+
+1. **Gemini PDF parse could hang 45+ seconds** on rate-limit. `resume-parser.ts` now wraps `generateContent` in a 20s `Promise.race` timeout.
+2. **Silent upload failure** — parse errors returned success metadata, leaving the UI on a spinner. `UPLOAD_DOCUMENT` now returns `{ parseError }`; `DocumentsScreen.tsx` shows a 6s red toast: *"AI quota exceeded — file saved, profile not extracted. Try again later or update API key."*
+3. **Radio/checkbox falsely tagged as ATS-prefilled** — `readElementValue()` treated `<input type="radio" value="Yes">` as "already filled" whenever the `value` attribute existed (every well-formed radio). Now returns the value only when `el.checked === true`.
+4. **Audit banner reported "0 by SmartFillAI"** despite filling 10+ fields — `applyHint()` unconditionally deleted `el.dataset.dittoFilled` during the 600ms post-fill re-scan. Now preserves the flag when the field still holds a non-empty value.
+
+All 4 fixes verified end-to-end in headed Chromium against a 16-field Greenhouse-like fixture. 302/302 unit tests still pass.
 
 ---
 
@@ -580,24 +628,26 @@ shared/
 
 ---
 
-## 9. Remaining Work (Post Phase AG)
+## 9. Remaining Work (Post Phase AI)
 
-### Immediate (manual steps)
-- [ ] **Push 28 local commits to origin/main** (`git push`) — user must trigger
-- [ ] **Reload extension** in `chrome://extensions` after push to test latest build
-- [ ] **Smoke test on Databricks** — set `window.__SFA_DEBUG = true` in PAGE DevTools, verify `[SmartFillAI] platform:detected ats=greenhouse via=query_param`
-
-### Short-term (1–2 sessions)
-- [ ] **C.5** — Q&A cache invalidation when user edits profile or uploads new resume
-- [ ] **C.6** — Build + strip any remaining diagnostic logs + final commit
+### Immediate
+- [x] Push all commits to origin/main (done 2026-06-26)
+- [ ] **Live smoke test on real Greenhouse/Workday application** when Gemini quota restores — current E2E suite uses a local fixture
 - [ ] **Chrome Web Store prep (AB.5)** — Multi-browser smoke test: Brave + Edge
 - [ ] **Chrome Web Store submission (AB.6)** — Upload extension + screenshots + listing copy
 
-### Medium-term feature backlog
-- [ ] **A.9/A.10** — Resume RAG: chunk + embed resume → LLM answer with retrieved context
+### Active roadmap (per `magical-brewing-zephyr.md` plan)
+
+- [ ] **Phase AJ** — Doc & test hardening (this section), add E2E specs for date/iframe/multi-checkbox
+- [ ] **Phase AK** — Sensitive-domain blocklist (banks/health/gov) with per-domain override
+- [ ] **Phase AL** — Global fingerprint tier (read path) — Supabase migration + `global-fingerprint-client.ts` + new Step 1.7 in waterfall
+- [ ] **Phase AM** — Global fingerprint tier (write path + consent) — `contribute_fingerprint` SECURITY DEFINER fn + first-run disclosure dialog. Default ON, opt-out via SettingsScreen
+- [ ] **Phase AN** — MCP server foundation — separate `mcp-server/` Node service exposing `resolve_form_fields`, `get_company_ats_profile`, `contribute_field_mapping`
+
+### Future feature backlog
 - [ ] **A.11** — Reviewable Q&A cache in popup (AnswersScreen enhancements)
-- [ ] **B.4/B.5** — Gemini ANSWER_FIELD with RAG + question embedding fuzzy match
-- [ ] **Public crowdsourced field registry** — deferred (trust/abuse model unsolved)
+- [ ] **B.5** — Question embedding fuzzy match (replace pure-keyword Q&A lookup)
+- [ ] Resume RAG via **embeddings** (keyword-only today, see §1.7)
 - [ ] **Pro tier** ($9/month): multi-resume, unlimited essays, company research
 - [ ] **Firefox port** (WebExtensions API)
 
@@ -607,6 +657,7 @@ shared/
 
 | Version | Date | Phases | Key Changes |
 |---------|------|--------|-------------|
+| 1.4.0 | 2026-06-26 | AH, AI + E2E hardening | Resume RAG (keyword retrieval), native ATS parser awareness (burst watcher + audit banner + skipIfFilled + teal badge), Playwright E2E harness, 4 reliability fixes (Gemini timeout, parse-error UI, radio-checked guard, dittoFilled preservation) |
 | 1.3.0 | 2026-06-25 | AF, AG | Pill-overwrite fix, dropdown learning always-prompt, async dropdown polling, Supabase auth flood fix |
 | 1.2.0 | 2026-06-24 | AD, AE | Form fingerprinting, ATS template seeding, embedded ATS detection (Databricks fix), char-by-char retry |
 | 1.1.0 | 2026-06-21 | W, X–Z, AA, AB | ARIA detection, glass UI, lazy MiniLM, SPA fix, Web Store prep |

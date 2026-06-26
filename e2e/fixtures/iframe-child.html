@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Iframe child form</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; padding: 0.8rem; margin: 0; }
+    .field { margin: 0.6rem 0; }
+    label { display: block; margin-bottom: 0.2rem; font-weight: 500; font-size: 0.9rem; }
+    input { width: 100%; padding: 0.4rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div class="field">
+    <label for="iframe_city">City (from iframe)</label>
+    <input type="text" id="iframe_city" name="city" autocomplete="address-level2">
+  </div>
+  <div class="field">
+    <label for="iframe_phone">Phone (from iframe)</label>
+    <input type="tel" id="iframe_phone" name="phone" autocomplete="tel">
+  </div>
+  <div class="field">
+    <label for="iframe_linkedin">LinkedIn URL</label>
+    <input type="text" id="iframe_linkedin" name="linkedin_url">
+  </div>
+</body>
+</html>
